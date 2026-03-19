@@ -14,7 +14,15 @@ from autoskill.llm.factory import build_llm
 from autoskill.models import SkillExample
 from autoskill.management.extraction import SkillCandidate
 
-from ..core.common import StageLogger, dedupe_strings, emit_stage_log, normalize_text, summarize_names
+from ..core.common import (
+    StageLogger,
+    StageProgressCallback,
+    dedupe_strings,
+    emit_stage_log,
+    emit_stage_progress,
+    normalize_text,
+    summarize_names,
+)
 from ..core.llm_utils import (
     clip_confidence,
     coerce_str_list,
@@ -24,6 +32,7 @@ from ..core.llm_utils import (
     section_items_from_prompt,
 )
 from ..models import SkillDraft, SkillSpec, SupportRecord, VersionState
+from ..taxonomy import load_skill_taxonomy
 
 
 def _identity_key_for_skill(
@@ -203,6 +212,7 @@ class SkillCompiler(Protocol):
         support_records: List[SupportRecord],
         target_state: VersionState,
         logger: StageLogger,
+        progress_callback: StageProgressCallback = None,
     ) -> SkillCompilationResult:
         """Compiles drafts into canonical skills and helper store candidates."""
 
@@ -393,6 +403,13 @@ class LLMSkillCompiler:
                 if str((draft.metadata or {}).get("family_bucket_label") or "").strip()
             ]
         )
+        source_taxonomy_paths = dedupe_strings(
+            [
+                str((draft.metadata or {}).get("skill_taxonomy_path") or (draft.metadata or {}).get("skill_taxonomy") or "").strip()
+                for draft in drafts
+                if str((draft.metadata or {}).get("skill_taxonomy_path") or (draft.metadata or {}).get("skill_taxonomy") or "").strip()
+            ]
+        )
         source_visible_levels = next(
             (
                 dict((draft.metadata or {}).get("visible_levels") or {})
@@ -403,6 +420,15 @@ class LLMSkillCompiler:
             {},
         )
         source_family_scope = source_family_ids[0] if source_family_ids else (source_family_names[0] if source_family_names else "")
+        group_taxonomy = None
+        try:
+            group_taxonomy = load_skill_taxonomy(
+                domain_type=source_domain_types[0] if source_domain_types else "",
+                taxonomy_path=source_taxonomy_paths[0] if source_taxonomy_paths else "",
+            )
+        except Exception:
+            group_taxonomy = None
+        default_asset_type = str(next((draft.asset_type for draft in drafts if str(draft.asset_type or "").strip()), "session_skill") or "session_skill").strip()
         for raw_item in raw_skills:
             item = maybe_json_dict(raw_item)
             name = str(item.get("name") or "").strip()
@@ -410,7 +436,15 @@ class LLMSkillCompiler:
             prompt = _fallback_prompt(item, "")
             if not name or not description or not prompt:
                 continue
-            asset_type = str(item.get("asset_type") or "").strip() or "session_skill"
+            raw_asset_type = str(item.get("asset_type") or "").strip()
+            if group_taxonomy is not None:
+                asset_type = group_taxonomy.strict_normalize_asset_type(raw_asset_type)
+            else:
+                asset_type = raw_asset_type if raw_asset_type in {"macro_protocol", "session_skill", "micro_skill", "safety_rule", "knowledge_reference"} else ""
+            if raw_asset_type and not asset_type:
+                asset_type = default_asset_type
+            if not asset_type:
+                asset_type = default_asset_type
             granularity = str(item.get("granularity") or "").strip() or "session"
             asset_node_id = str(item.get("asset_node_id") or default_asset_node_id).strip()
             asset_path = str(item.get("asset_path") or default_asset_path).strip() or asset_node_id
@@ -569,6 +603,7 @@ class LLMSkillCompiler:
         support_records: List[SupportRecord],
         target_state: VersionState,
         logger: StageLogger,
+        progress_callback: StageProgressCallback = None,
     ) -> SkillCompilationResult:
         result = SkillCompilationResult(
             skill_drafts=list(skill_drafts or []),
@@ -583,7 +618,18 @@ class LLMSkillCompiler:
         for support in support_records or []:
             _ = support
 
-        for group_key, drafts in grouped.items():
+        total_groups = len(grouped)
+        emit_stage_progress(
+            progress_callback,
+            {
+                "stage": "compile",
+                "kind": "start",
+                "total_groups": total_groups,
+                "completed_groups": 0,
+                "total_skills": 0,
+            },
+        )
+        for idx, (group_key, drafts) in enumerate(grouped.items(), start=1):
             try:
                 support_ids: List[str] = []
                 for draft in drafts:
@@ -601,9 +647,36 @@ class LLMSkillCompiler:
                     logger,
                     f"[compile_skills] group={group_key} skills={len(compiled_specs)} names={summarize_names([spec.name for spec in compiled_specs])}",
                 )
+                emit_stage_progress(
+                    progress_callback,
+                    {
+                        "stage": "compile",
+                        "kind": "group_done",
+                        "group_key": group_key,
+                        "completed_groups": idx,
+                        "total_groups": total_groups,
+                        "group_skill_count": len(compiled_specs),
+                        "total_skills": len(list(result.skill_specs or [])),
+                        "errors": len(list(result.errors or [])),
+                        "names": [spec.name for spec in compiled_specs],
+                    },
+                )
             except Exception as e:
                 result.errors.append({"group": group_key, "error": str(e)})
                 emit_stage_log(logger, f"[compile_skills] error group={group_key}: {e}")
+                emit_stage_progress(
+                    progress_callback,
+                    {
+                        "stage": "compile",
+                        "kind": "group_error",
+                        "group_key": group_key,
+                        "completed_groups": idx,
+                        "total_groups": total_groups,
+                        "group_skill_count": 0,
+                        "total_skills": len(list(result.skill_specs or [])),
+                        "errors": len(list(result.errors or [])),
+                    },
+                )
         return result
 
 
@@ -681,6 +754,7 @@ def compile_skills(
     compiler: SkillCompiler | None = None,
     target_state: VersionState = VersionState.DRAFT,
     logger: StageLogger = None,
+    progress_callback: StageProgressCallback = None,
 ) -> SkillCompilationResult:
     """Public functional wrapper for the skill compilation stage."""
 
@@ -690,4 +764,5 @@ def compile_skills(
         support_records=list(support_records or []),
         target_state=target_state,
         logger=logger,
+        progress_callback=progress_callback,
     )

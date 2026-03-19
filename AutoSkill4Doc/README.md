@@ -33,7 +33,11 @@ Core layers:
 - standalone CLI: `autoskill4doc ...` or `python -m AutoSkill4Doc ...`
 - incremental skip by content hash
 - section filtering + strict/recommended windowing
-- rule-first section parsing with one optional outline-level LLM fallback when headings are missing or the recovered structure is too weak
+- document-level parallel extraction via `--extract-workers`, while each document still extracts windows sequentially and final outputs keep input document order
+- in non-`--quiet` CLI runs, the CLI now shows one live single-line multi-stage progress view: extraction reports document and window progress, while later stages report compile-group and register-skill progress
+- transient extraction failures such as rate limits or short-lived overload now retry with exponential backoff instead of dropping the document immediately; tune with `--extract-retries` and `--extract-retry-backoff-s`
+- if one document still fails after retries, AutoSkill4Doc records that failure at the document level and continues the rest of the batch instead of aborting the whole extraction run
+- rules first recall candidate headings; when `section-outline-mode=auto` and an LLM is available, AutoSkill4Doc runs one compact outline-level LLM classification pass per document to assign section/subsection levels
 - dry-run and stage-by-stage execution
 - support-backed provenance and change logs
 - lifecycle-aware versioning: `candidate -> draft -> evaluating -> active -> watchlist -> deprecated -> retired`
@@ -134,7 +138,10 @@ non-`dry-run` builds also write incremental snapshots under
 `.runtime/intermediate_runs/<run_id>/`. If a run crashes after ingest or
 extract, rerunning the same input/config automatically reuses the latest
 unfinished run and resumes from the persisted stage snapshots instead of
-starting extraction from scratch.
+starting extraction from scratch. Per-document extract failures are also
+persisted under `extract/documents/<doc_id>.json`, so a long batch can finish
+with partial success plus explicit failed-document records instead of failing
+all-or-nothing.
 
 ## How Parent/Child Skills Are Generated
 
@@ -146,7 +153,7 @@ single extraction step. It works in two layers:
      - markdown headings plus numbered / chapter-style headings such as `3`, `3.1`, `第3章`, `（一）`
      - window planning groups subsections under their top-level chapter, so `4.1 / 4.2 / 5.1` style blocks are extracted under `4 ...` / `5 ...` root sections rather than treated as separate top-level units
      - hierarchy metadata (`heading_path`, `parent_heading`, `sibling_headings`, `subsection_headings`) is attached to each window
-     - if rule-based heading detection fails, or only recovers a very weak partial outline, AutoSkill4Doc can do at most one compact outline LLM pass per document to decide section vs subsection
+     - rules first recall candidate heading lines; when an LLM is available, AutoSkill4Doc can do one compact outline LLM pass per document to classify those candidates into section/subsection levels
      - long sections are pre-split before final window planning; default `--max-section-chars` is `10000`
      - bibliography / reference-heavy sections are skipped before extraction
    - `extract` produces `SupportRecord + SkillDraft`
@@ -311,6 +318,12 @@ Provider config is environment-variable based rather than file-based. Common exa
 - GLM: `ZHIPUAI_API_KEY` or `BIGMODEL_API_KEY`
 - Generic backend: `AUTOSKILL_GENERIC_LLM_URL`, `AUTOSKILL_GENERIC_EMBED_URL`
 
+Important:
+
+- user-facing extraction commands (`build`, `llm-extract`, `extract`, `compile`, `diag`) no longer silently fall back to `mock`
+- if no real provider can be resolved, AutoSkill4Doc exits with an error instead of running with test-only mock behavior
+- `mock` remains available only for development/testing paths
+
 Resolution priority:
 
 - explicit CLI argument
@@ -325,8 +338,8 @@ Parsing / hierarchy knobs:
   - pre-splits one oversized detected section before final window construction
   - default: `10000`
 - `--section-outline-mode auto|off`
-  - `auto`: when rule-based heading detection fails, do one compact outline LLM pass per document
-  - `off`: disable the outline LLM fallback completely
+  - `auto`: when an LLM is available, do one compact outline LLM classification pass over candidate headings for each document; rules only recall candidates and provide fallback
+  - `off`: disable outline LLM classification completely and rely on rules only
 
 ## Is The Flow Reasonable
 

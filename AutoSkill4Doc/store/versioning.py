@@ -16,7 +16,14 @@ from autoskill.llm.factory import build_llm
 from autoskill.models import Skill, SkillStatus
 from autoskill.utils.time import now_iso
 
-from ..core.common import StageLogger, emit_stage_log, normalize_text, summarize_names
+from ..core.common import (
+    StageLogger,
+    StageProgressCallback,
+    emit_stage_log,
+    emit_stage_progress,
+    normalize_text,
+    summarize_names,
+)
 from ..core.config import DEFAULT_DOC_SKILL_USER_ID
 from ..core.llm_utils import (
     clip_confidence,
@@ -515,12 +522,45 @@ class VersionManager:
         retriever: Optional[DocumentSkillRetriever] = None,
         retrieval_limit: int = DEFAULT_RETRIEVAL_LIMIT,
         logger: StageLogger = None,
+        progress_callback: StageProgressCallback = None,
     ) -> None:
         self.registry = registry
         self.llm = llm
         self.retriever = retriever
         self.retrieval_limit = max(1, int(retrieval_limit or DEFAULT_RETRIEVAL_LIMIT))
         self.logger = logger
+        self.progress_callback = progress_callback
+
+    @staticmethod
+    def _compact_text(value: Any, *, limit: int = 240) -> str:
+        """Returns one short normalized text field suitable for hot-path LLM payloads."""
+
+        text = normalize_text(str(value or ""))
+        if len(text) <= max(0, int(limit or 0)):
+            return text
+        return text[: max(0, int(limit or 0))].rstrip() + "..."
+
+    def _support_summary_for_llm(self, skill: SkillSpec, *, support_by_id: Dict[str, SupportRecord]) -> Dict[str, Any]:
+        """Builds one compact support summary for version decisions."""
+
+        supports = [
+            support_by_id.get(str(support_id or "").strip())
+            for support_id in list(skill.support_ids or [])
+        ]
+        resolved = [support for support in supports if support is not None]
+        relation_counts: Dict[str, int] = {}
+        conflict_count = 0
+        for support in resolved:
+            relation = str(support.relation_type.value or "").strip()
+            relation_counts[relation] = int(relation_counts.get(relation) or 0) + 1
+            if support.relation_type == SupportRelation.CONFLICT:
+                conflict_count += 1
+        return {
+            "count": len(resolved),
+            "conflict_count": conflict_count,
+            "relation_counts": relation_counts,
+            "sections": compact_text_list([str(support.section or "").strip() for support in resolved], limit=4),
+        }
 
     def _skill_for_llm(self, skill: SkillSpec, *, support_by_id: Dict[str, SupportRecord]) -> Dict[str, Any]:
         return {
@@ -571,6 +611,34 @@ class VersionManager:
             "version": skill.version,
             "status": skill.status.value,
             "metadata": dict(skill.metadata or {}),
+        }
+
+    def _skill_for_change_llm(self, skill: SkillSpec, *, support_by_id: Dict[str, SupportRecord]) -> Dict[str, Any]:
+        """Builds one compact skill payload for high-frequency classify_change() calls."""
+
+        return {
+            "skill_id": skill.skill_id,
+            "name": self._compact_text(skill.name, limit=120),
+            "description": self._compact_text(skill.description, limit=220),
+            "asset_type": str(skill.asset_type or "").strip(),
+            "granularity": str(skill.granularity or "").strip(),
+            "asset_node_id": str(skill.asset_node_id or "").strip(),
+            "asset_level": int(skill.asset_level or 0),
+            "visible_role": str(skill.visible_role or "").strip(),
+            "objective": self._compact_text(skill.objective, limit=220),
+            "domain": str(skill.domain or "").strip(),
+            "task_family": str(skill.task_family or "").strip(),
+            "method_family": str(skill.method_family or "").strip(),
+            "stage": str(skill.stage or "").strip(),
+            "triggers": list(skill.triggers or [])[:3],
+            "workflow_steps": list(skill.workflow_steps or [])[:6],
+            "constraints": list(skill.constraints or [])[:4],
+            "cautions": list(skill.cautions or [])[:3],
+            "output_contract": list(skill.output_contract or [])[:3],
+            "tags": list(skill.tags or [])[:4],
+            "support_summary": self._support_summary_for_llm(skill, support_by_id=support_by_id),
+            "version": str(skill.version or "").strip(),
+            "status": skill.status.value,
         }
 
     def _resolved_skill(self, raw: Any, *, fallback: SkillSpec) -> SkillSpec:
@@ -657,17 +725,64 @@ class VersionManager:
     ) -> ChangeDecision:
         """Uses an LLM to classify how one candidate should affect registry state."""
 
+        compact_candidate = self._skill_for_change_llm(skill, support_by_id=support_by_id)
+        compact_peers = [
+            self._skill_for_change_llm(peer, support_by_id=support_by_id)
+            for peer in list(peer_skills or [])
+            if peer.skill_id != skill.skill_id
+        ][:3]
+        compact_existing = [
+            self._skill_for_change_llm(existing, support_by_id=support_by_id)
+            for existing in list(existing_skills or [])
+        ][:3]
+        if not compact_existing:
+            payload = {
+                "candidate_skill": compact_candidate,
+                "peer_candidates": compact_peers,
+            }
+            system = (
+                "You are AutoSkill's Document Skill Version Manager.\n"
+                "Task: decide whether one brand-new candidate skill should be created or discarded.\n"
+                "Output ONLY strict JSON parseable by json.loads.\n"
+                "Rules:\n"
+                "- Use discard only when the candidate is too weak, redundant, or not a reusable executable skill.\n"
+                "- Use create when it is a reusable skill worth registering.\n"
+                "- peer_candidates are weak context only; do not invent merge targets.\n"
+                "Return schema:\n"
+                "{\n"
+                '  "action": "create"|"discard",\n'
+                '  "reason": "short reason",\n'
+                '  "resolved_skill": {optional canonical skill payload}\n'
+                "}\n"
+            )
+            repair_system = (
+                "You are a JSON output fixer for document skill version decisions.\n"
+                "Given DATA and DRAFT, output ONLY strict JSON with fields action, reason, resolved_skill.\n"
+            )
+            repaired_payload = f"DATA:\n{json.dumps(payload, ensure_ascii=False)}\n\nDRAFT:\n__DRAFT__"
+            parsed = llm_complete_json(
+                llm=self.llm,
+                system=system,
+                payload=payload,
+                repair_system=repair_system,
+                repair_payload=repaired_payload,
+            )
+            obj = maybe_json_dict(parsed)
+            action = str(obj.get("action") or "").strip().lower()
+            if action not in {"create", "discard"}:
+                action = "create"
+            return ChangeDecision(
+                action=action,
+                skill=self._resolved_skill(obj.get("resolved_skill"), fallback=skill),
+                matched_skill_ids=[],
+                reason=str(obj.get("reason") or "").strip() or action,
+                split_parent_id="",
+            )
+
         payload = {
-            "candidate_skill": self._skill_for_llm(skill, support_by_id=support_by_id),
-            "peer_candidates": [
-                self._skill_for_llm(peer, support_by_id=support_by_id)
-                for peer in list(peer_skills or [])
-                if peer.skill_id != skill.skill_id
-            ][:8],
-            "existing_skills": [
-                self._skill_for_llm(existing, support_by_id=support_by_id)
-                for existing in list(existing_skills or [])
-            ][:12],
+            "candidate_skill": compact_candidate,
+            "peer_candidates": compact_peers,
+            "existing_skills": compact_existing,
         }
         system = (
             "You are AutoSkill's Document Skill Version Manager.\n"
@@ -683,6 +798,7 @@ class VersionManager:
             "- discard: do not persist candidate\n"
             "Rules:\n"
             "- Decide from semantic capability identity, not lexical similarity.\n"
+            "- candidate_skill, peer_candidates, and existing_skills are compact summaries; do not assume omitted fields are meaningful differences.\n"
             "- Do not merge, strengthen, revise, or mark unchanged across different asset_type, granularity, or asset_node_id.\n"
             "- Treat macro_protocol, session_skill, micro_skill, safety_rule, and knowledge_reference as different asset layers unless there is an explicit split relationship.\n"
             "- Use peer_candidates to detect split cases where multiple narrower candidates replace one broad existing skill.\n"
@@ -1303,7 +1419,19 @@ class VersionManager:
         retriever.refresh(existing_skills)
 
         decisions: List[ChangeDecision] = []
-        for skill in list(skills or []):
+        total_skills = len(list(skills or []))
+        emit_stage_progress(
+            self.progress_callback,
+            {
+                "stage": "register",
+                "kind": "start",
+                "phase": "reconcile",
+                "completed_skills": 0,
+                "total_skills": total_skills,
+                "errors": 0,
+            },
+        )
+        for idx, skill in enumerate(list(skills or []), start=1):
             hits = retriever.search(
                 skill,
                 limit=self.retrieval_limit,
@@ -1317,13 +1445,27 @@ class VersionManager:
                     f"names={summarize_names([item.name for item in retrieved_existing])}"
                 ),
             )
-            decisions.append(
-                self.classify_change(
-                    skill,
-                    peer_skills=skills,
-                    existing_skills=retrieved_existing,
-                    support_by_id=support_by_id,
-                )
+            decision = self.classify_change(
+                skill,
+                peer_skills=skills,
+                existing_skills=retrieved_existing,
+                support_by_id=support_by_id,
+            )
+            decisions.append(decision)
+            emit_stage_progress(
+                self.progress_callback,
+                {
+                    "stage": "register",
+                    "kind": "reconcile_progress",
+                    "phase": "reconcile",
+                    "completed_skills": idx,
+                    "total_skills": total_skills,
+                    "current_skill_id": str(skill.skill_id or "").strip(),
+                    "current_name": str(skill.name or "").strip(),
+                    "hits": len(retrieved_existing),
+                    "action": str(decision.action or "").strip(),
+                    "errors": len(list(result.errors or [])),
+                },
             )
 
         processed_split_parents: Set[str] = set()
@@ -1635,6 +1777,26 @@ class VersionManager:
         for support in result.support_records:
             deduped_supports[support.support_id] = support
         result.support_records = list(deduped_supports.values())
+        emit_stage_progress(
+            self.progress_callback,
+            {
+                "stage": "register",
+                "kind": "reconcile_done",
+                "phase": "reconcile",
+                "completed_skills": total_skills,
+                "total_skills": total_skills,
+                "actions": {
+                    "create": len([item for item in decisions if item.action == "create"]),
+                    "strengthen": len([item for item in decisions if item.action == "strengthen"]),
+                    "revise": len([item for item in decisions if item.action == "revise"]),
+                    "merge": len([item for item in decisions if item.action == "merge"]),
+                    "split": len([item for item in decisions if item.action == "split"]),
+                    "unchanged": len([item for item in decisions if item.action == "unchanged"]),
+                    "discard": len([item for item in decisions if item.action == "discard"]),
+                },
+                "errors": len(list(result.errors or [])),
+            },
+        )
         return result
 
 
@@ -1651,6 +1813,7 @@ def register_versions(
     dry_run: bool = False,
     target_state: VersionState = VersionState.ACTIVE,
     logger: StageLogger = None,
+    progress_callback: StageProgressCallback = None,
 ) -> VersionRegistrationResult:
     """
     Registers a compiled batch into the document registry and optionally the skill store.
@@ -1672,8 +1835,9 @@ def register_versions(
         registry=registry,
         llm=llm_impl,
         retriever=retriever,
-        retrieval_limit=12,
+        retrieval_limit=DEFAULT_RETRIEVAL_LIMIT,
         logger=logger,
+        progress_callback=progress_callback,
     )
     reconciled = manager.reconcile(
         skills=skill_specs,
@@ -1684,6 +1848,18 @@ def register_versions(
     reconciled.skill_specs, reconciled.hierarchy_updates = manager.link_hierarchy(
         skills=reconciled.skill_specs,
         existing_skills=preexisting_skills,
+    )
+    emit_stage_progress(
+        progress_callback,
+        {
+            "stage": "register",
+            "kind": "hierarchy_done",
+            "phase": "hierarchy",
+            "completed_skills": len(list(reconciled.skill_specs or [])),
+            "total_skills": len(list(reconciled.skill_specs or [])),
+            "hierarchy_updates": len(list(reconciled.hierarchy_updates or [])),
+            "errors": len(list(reconciled.errors or [])),
+        },
     )
     reconciled.documents = list(documents or [])
     reconciled.dry_run = bool(dry_run)
@@ -1742,6 +1918,18 @@ def register_versions(
                     emit_stage_log(
                         logger,
                         f"[register_versions] store_upserts={len(reconciled.upserted_store_skills)} names={summarize_names([str(skill.get('name') or '') for skill in reconciled.upserted_store_skills])}",
+                    )
+                    emit_stage_progress(
+                        progress_callback,
+                        {
+                            "stage": "register",
+                            "kind": "store_done",
+                            "phase": "store_sync",
+                            "completed_skills": len(list(reconciled.skill_specs or [])),
+                            "total_skills": len(list(reconciled.skill_specs or [])),
+                            "store_upserts": len(list(reconciled.upserted_store_skills or [])),
+                            "errors": len(list(reconciled.errors or [])),
+                        },
                     )
                 except Exception as e:
                     reconciled.errors.append({"stage": "store_upsert", "error": str(e)})
@@ -1822,6 +2010,19 @@ def register_versions(
                     logger,
                     f"[register_versions] staging profile={profile_id} family={family_id} child_type={child_type} skills={len(bucket_skills)}",
                 )
+                emit_stage_progress(
+                    progress_callback,
+                    {
+                        "stage": "register",
+                        "kind": "staging_progress",
+                        "phase": "staging",
+                        "completed_buckets": len(list(reconciled.staging_runs or [])),
+                        "total_buckets": len(bucketed),
+                        "family_name": family_id,
+                        "child_type": child_type,
+                        "errors": len(list(reconciled.errors or [])),
+                    },
+                )
 
         try:
             visible_tree = sync_visible_skill_tree(
@@ -1836,6 +2037,19 @@ def register_versions(
                 logger=logger,
             )
             reconciled.visible_tree = visible_tree.to_dict()
+            emit_stage_progress(
+                progress_callback,
+                {
+                    "stage": "register",
+                    "kind": "visible_tree_done",
+                    "phase": "visible_tree",
+                    "completed_skills": len(list(reconciled.skill_specs or [])),
+                    "total_skills": len(list(reconciled.skill_specs or [])),
+                    "affected_families": len(list((reconciled.visible_tree or {}).get("affected_families") or [])),
+                    "visible_children": len(list((reconciled.visible_tree or {}).get("child_paths") or [])),
+                    "errors": len(list(reconciled.errors or [])),
+                },
+            )
         except Exception as e:
             reconciled.errors.append({"stage": "visible_tree_sync", "error": str(e)})
             emit_stage_log(logger, f"[register_versions] visible tree sync error: {e}")

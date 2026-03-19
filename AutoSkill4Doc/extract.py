@@ -25,11 +25,12 @@ import argparse
 import json
 import os
 import sys
+import threading
 from typing import Any, Dict, List, Optional, Sequence
 
 from autoskill import AutoSkill, AutoSkillConfig
 
-from .core.common import StageLogger, compact_metadata
+from .core.common import StageLogger, compact_metadata, document_progress_label
 from .core.config import (
     DEFAULT_DOC_SKILL_USER_ID,
     DEFAULT_EXTRACT_STRATEGY,
@@ -41,8 +42,11 @@ from .core.config import (
     normalize_section_outline_mode,
 )
 from .core.provider_config import (
+    allow_mock_provider as _allow_mock_provider,
     build_embeddings_config as _build_provider_embeddings_config,
     build_llm_config as _build_provider_llm_config,
+    ensure_runtime_llm_provider as _ensure_runtime_llm_provider,
+    pick_default_provider as _pick_default_provider,
 )
 from .models import DocumentRecord, SkillDraft, SkillSpec, StrictWindow, SupportRecord, VersionState
 from .ingest import HeuristicDocumentIngestor
@@ -68,6 +72,204 @@ _DOCUMENT_CLI_EXAMPLES = (
 )
 
 
+class _CliExtractProgressReporter:
+    """CLI-only one-line multi-stage progress view."""
+
+    def __init__(self, *, enabled: bool, stream=None) -> None:
+        self.enabled = bool(enabled)
+        self.stream = stream or sys.stdout
+        self.stage = "extract"
+        self.total_documents = 0
+        self.completed_documents = 0
+        self.total_windows = 0
+        self.completed_windows = 0
+        self.failed_documents = 0
+        self.total_support_records = 0
+        self.total_skill_drafts = 0
+        self.total_compile_groups = 0
+        self.completed_compile_groups = 0
+        self.total_compiled_skills = 0
+        self.compile_errors = 0
+        self.total_register_skills = 0
+        self.completed_register_skills = 0
+        self.register_phase = "reconcile"
+        self.register_errors = 0
+        self.register_actions: Dict[str, int] = {}
+        self.last_label = ""
+        self._line_width = 0
+        self._progress_visible = False
+        self._lock = threading.RLock()
+
+    def __call__(self, message: str) -> None:
+        self.log(message)
+
+    def set_total_documents(
+        self,
+        total: int,
+        *,
+        completed: int = 0,
+        total_windows: int = 0,
+        completed_windows: int = 0,
+    ) -> None:
+        """Seeds the progress view with the extraction document budget."""
+
+        with self._lock:
+            self.stage = "extract"
+            self.total_documents = max(0, int(total or 0))
+            self.completed_documents = max(0, min(int(completed or 0), self.total_documents or int(completed or 0)))
+            self.total_windows = max(0, int(total_windows or 0))
+            self.completed_windows = max(0, min(int(completed_windows or 0), self.total_windows or int(completed_windows or 0)))
+            self._render_progress()
+
+    def on_extract_progress(self, record: DocumentRecord, supports: List[SupportRecord], drafts: List[SkillDraft], cumulative) -> None:
+        """Refreshes the one-line progress after one successful document finishes."""
+
+        _ = supports, drafts
+        with self._lock:
+            self.stage = "extract"
+            self.completed_documents = min(
+                self.total_documents or (self.completed_documents + 1),
+                self.completed_documents + 1,
+            )
+            self.total_support_records = len(list(getattr(cumulative, "support_records", []) or []))
+            self.total_skill_drafts = len(list(getattr(cumulative, "skill_drafts", []) or []))
+            self.last_label = document_progress_label(
+                doc_id=str(record.doc_id or "").strip(),
+                title=str(record.title or "").strip(),
+                source_file=str((record.metadata or {}).get("source_file") or "").strip(),
+            )
+            self._render_progress()
+
+    def on_stage_progress(self, payload: Dict[str, Any]) -> None:
+        """Refreshes the live progress line from structured stage events."""
+
+        event = dict(payload or {})
+        stage = str(event.get("stage") or "").strip().lower()
+        if not stage:
+            return
+        with self._lock:
+            if stage == "extract":
+                self.stage = "extract"
+                kind = str(event.get("kind") or "").strip().lower()
+                if kind in {"document_start", "window_progress", "document_done"}:
+                    self.last_label = document_progress_label(
+                        doc_id=str(event.get("doc_id") or "").strip(),
+                        title=str(event.get("title") or "").strip(),
+                        source_file=str(event.get("source_file") or "").strip(),
+                    )
+                if kind == "window_progress":
+                    self.completed_windows = max(self.completed_windows, int(event.get("completed_windows") or 0))
+                    self.total_windows = max(self.total_windows, int(event.get("total_windows") or 0))
+                    self.total_support_records = max(self.total_support_records, int(event.get("total_support_records") or 0))
+                    self.total_skill_drafts = max(self.total_skill_drafts, int(event.get("total_skill_drafts") or 0))
+            elif stage == "compile":
+                self.stage = "compile"
+                self.total_compile_groups = max(self.total_compile_groups, int(event.get("total_groups") or 0))
+                self.completed_compile_groups = max(self.completed_compile_groups, int(event.get("completed_groups") or 0))
+                self.total_compiled_skills = max(self.total_compiled_skills, int(event.get("total_skills") or 0))
+                self.compile_errors = max(self.compile_errors, int(event.get("errors") or 0))
+                current_names = list(event.get("names") or [])
+                current_name = str(current_names[0] or "").strip() if current_names else ""
+                if current_name:
+                    self.last_label = f"skill={current_name}"
+            elif stage == "register":
+                self.stage = "register"
+                if str(event.get("phase") or "").strip():
+                    self.register_phase = str(event.get("phase") or "").strip()
+                self.total_register_skills = max(self.total_register_skills, int(event.get("total_skills") or 0))
+                self.completed_register_skills = max(self.completed_register_skills, int(event.get("completed_skills") or 0))
+                self.register_errors = max(self.register_errors, int(event.get("errors") or 0))
+                current_name = str(event.get("current_name") or "").strip()
+                if current_name:
+                    self.last_label = f"skill={current_name}"
+                if isinstance(event.get("actions"), dict):
+                    for key, value in dict(event.get("actions") or {}).items():
+                        self.register_actions[str(key)] = int(value or 0)
+                action = str(event.get("action") or "").strip()
+                if action:
+                    self.register_actions[action] = int(self.register_actions.get(action) or 0) + 1
+            self._render_progress()
+
+    def log(self, message: str) -> None:
+        """Prints one stage log while keeping progress on a separate refreshable line."""
+
+        text = str(message or "")
+        if not text:
+            return
+        with self._lock:
+            if text.startswith("[extract_skills] error "):
+                self.completed_documents = min(
+                    self.total_documents or (self.completed_documents + 1),
+                    self.completed_documents + 1,
+                )
+                self.failed_documents += 1
+            self._clear_progress_line()
+            print(text, file=self.stream, flush=True)
+            self._render_progress()
+
+    def finish(self) -> None:
+        """Finalizes the single-line progress output before summary text."""
+
+        with self._lock:
+            if self.enabled and self._progress_visible:
+                self.stream.write("\n")
+                self.stream.flush()
+                self._progress_visible = False
+                self._line_width = 0
+
+    def _clear_progress_line(self) -> None:
+        if not self.enabled or not self._progress_visible:
+            return
+        self.stream.write("\r" + (" " * self._line_width) + "\r")
+        self.stream.flush()
+        self._progress_visible = False
+
+    def _render_progress(self) -> None:
+        if not self.enabled:
+            return
+        suffix = f" current={self.last_label}" if self.last_label else ""
+        if self.stage == "compile":
+            if self.total_compile_groups <= 0:
+                return
+            text = (
+                f"[compile_progress] {self.completed_compile_groups}/{self.total_compile_groups} groups "
+                f"skills={self.total_compiled_skills} errors={self.compile_errors}{suffix}"
+            )
+        elif self.stage == "register":
+            if self.total_register_skills <= 0 and not self.register_phase:
+                return
+            action_summary = " ".join(
+                f"{key}={value}"
+                for key, value in sorted(self.register_actions.items())
+                if int(value or 0) > 0
+            )
+            if action_summary:
+                action_summary = " " + action_summary
+            text = (
+                f"[register_progress] {self.completed_register_skills}/{self.total_register_skills or self.completed_register_skills} skills "
+                f"phase={self.register_phase} errors={self.register_errors}{action_summary}{suffix}"
+            )
+        else:
+            if self.total_documents <= 0:
+                return
+            windows_part = (
+                f" windows={self.completed_windows}/{self.total_windows}"
+                if self.total_windows > 0
+                else ""
+            )
+            text = (
+                f"[extract_progress] {self.completed_documents}/{self.total_documents} docs"
+                f"{windows_part} supports={self.total_support_records} drafts={self.total_skill_drafts} "
+                f"errors={self.failed_documents}{suffix}"
+            )
+        rendered = "\r" + text
+        pad = max(0, self._line_width - len(text))
+        self.stream.write(rendered + (" " * pad))
+        self.stream.flush()
+        self._line_width = len(text)
+        self._progress_visible = True
+
+
 def _resolve_taxonomy_context(
     *,
     domain: str,
@@ -89,10 +291,19 @@ def _resolve_taxonomy_context(
         or str((metadata or {}).get("family_name") or "").strip()
         or str((metadata or {}).get("school_name") or "").strip()
     )
-    resolved_family = taxonomy.resolve_family_name(
-        requested=explicit_family,
-        metadata=metadata,
-    ) if explicit_family else ""
+    resolved_family = ""
+    if explicit_family:
+        configured_family = taxonomy.ensure_configured_family_candidate(
+            requested=explicit_family,
+            metadata=metadata,
+        )
+        if configured_family is not None:
+            resolved_family = str(configured_family.get("visible_name") or configured_family.get("name") or "").strip()
+        else:
+            resolved_family = taxonomy.resolve_family_name(
+                requested=explicit_family,
+                metadata=metadata,
+            )
     resolved_axis = taxonomy.resolve_axis_label(requested=str(taxonomy_axis or "").strip())
     resolved_profile_id = str(profile_id or "").strip()
     if not resolved_profile_id and resolved_family:
@@ -125,6 +336,9 @@ def extract_from_doc(
     max_documents: int = 0,
     max_candidates_per_unit: int = 3,
     max_units_per_document: int = 0,
+    extract_workers: int = 1,
+    extract_retries: int = 3,
+    extract_retry_backoff_s: float = 1.0,
     max_section_chars: int = DEFAULT_MAX_SECTION_CHARS,
     section_outline_mode: str = "auto",
     family_name: str = "",
@@ -132,6 +346,7 @@ def extract_from_doc(
     taxonomy_axis: str = "",
     domain_type: str = "",
     skill_taxonomy_path: str = "",
+    allow_mock_provider: bool = False,
 ) -> Dict[str, Any]:
     """
     Runs the staged offline document pipeline and returns a compact summary.
@@ -143,6 +358,12 @@ def extract_from_doc(
     """
 
     md = dict(metadata or {})
+    llm_cfg = dict(getattr(getattr(sdk, "config", None), "llm", {}) or {})
+    _ensure_runtime_llm_provider(
+        str(llm_cfg.get("provider") or ""),
+        context="AutoSkill4Doc extract_from_doc",
+        allow_mock=bool(allow_mock_provider or _allow_mock_provider(llm_cfg)),
+    )
     md.setdefault("channel", "offline_extract_from_doc")
     md.setdefault("source_type", str(source_type or "").strip() or "document")
     if hint and str(hint).strip():
@@ -174,22 +395,27 @@ def extract_from_doc(
         registry_root=str(registry_root or "").strip(),
         logger=logger,
         document_ingestor=HeuristicDocumentIngestor(
-            llm_config=dict(getattr(getattr(sdk, "config", None), "llm", {}) or {}),
+            llm_config=dict(llm_cfg),
             max_section_chars=int(max_section_chars or 0) or DEFAULT_MAX_SECTION_CHARS,
             outline_fallback_mode=normalize_section_outline_mode(section_outline_mode),
         ),
         document_skill_extractor=build_document_skill_extractor(
             "llm",
-            llm_config=dict(getattr(getattr(sdk, "config", None), "llm", {}) or {}),
+            llm_config=dict(llm_cfg),
             max_section_chars=int(max_chars_per_chunk or 0) or 6000,
             overlap_chars=int(overlap_chars or 0),
             max_candidates_per_unit=int(max_candidates_per_unit or 0) or 3,
             max_units_per_document=int(max_units_per_document or 0),
+            extract_workers=max(1, int(extract_workers or 1)),
+            extract_retries=max(0, int(extract_retries or 0)),
+            extract_retry_backoff_s=max(0.0, float(extract_retry_backoff_s or 0.0)),
             domain_type=taxonomy.domain_type,
             skill_taxonomy_path=str(skill_taxonomy_path or "").strip(),
             taxonomy=taxonomy,
         ),
         taxonomy=taxonomy,
+        extract_retries=max(0, int(extract_retries or 0)),
+        extract_retry_backoff_s=max(0.0, float(extract_retry_backoff_s or 0.0)),
     )
     result = pipeline.build(
         user_id=str(user_id or "").strip() or DEFAULT_DOC_SKILL_USER_ID,
@@ -329,12 +555,20 @@ def _build_summary(*, pipeline: DocumentBuildPipeline, result: DocumentBuildResu
     }
 
 
-def _build_llm_config(args: argparse.Namespace) -> Dict[str, Any]:
+def _build_llm_config(args: argparse.Namespace, *, require_real_llm: bool) -> Dict[str, Any]:
     """Builds the LLM provider config from CLI args."""
 
-    provider = str(args.llm_provider or "mock").strip() or "mock"
+    requested = str(args.llm_provider or "").strip()
+    provider = requested or _pick_default_provider()
+    provider = _ensure_runtime_llm_provider(
+        provider,
+        context="AutoSkill4Doc extraction",
+        allow_mock=bool(getattr(args, "allow_mock_provider", False)),
+    ) if require_real_llm else str(provider or "").strip().lower()
     model = str(args.llm_model or "").strip() or None
     cfg = _build_provider_llm_config(provider, model=model)
+    if bool(getattr(args, "allow_mock_provider", False)):
+        cfg["allow_mock"] = True
     if str(args.llm_base_url or "").strip():
         cfg["base_url"] = str(args.llm_base_url).strip()
     if str(args.llm_api_key or "").strip():
@@ -350,10 +584,9 @@ def _build_llm_config(args: argparse.Namespace) -> Dict[str, Any]:
     return cfg
 
 
-def _build_embeddings_config(args: argparse.Namespace) -> Dict[str, Any]:
+def _build_embeddings_config(args: argparse.Namespace, *, llm_provider: str) -> Dict[str, Any]:
     """Builds the embeddings provider config from CLI args."""
 
-    llm_provider = str(args.llm_provider or "mock").strip().lower() or "mock"
     provider = str(args.embeddings_provider or "").strip()
     model = str(args.embeddings_model or "").strip() or None
     cfg = _build_provider_embeddings_config(provider, model=model, llm_provider=llm_provider)
@@ -373,11 +606,11 @@ def _build_embeddings_config(args: argparse.Namespace) -> Dict[str, Any]:
     return cfg
 
 
-def _build_sdk_from_args(args: argparse.Namespace) -> AutoSkill:
+def _build_sdk_from_args(args: argparse.Namespace, *, require_real_llm: bool = False) -> AutoSkill:
     """Builds an AutoSkill SDK for document pipeline commands."""
 
-    llm_cfg = _build_llm_config(args)
-    emb_cfg = _build_embeddings_config(args)
+    llm_cfg = _build_llm_config(args, require_real_llm=require_real_llm)
+    emb_cfg = _build_embeddings_config(args, llm_provider=str(llm_cfg.get("provider") or "").strip().lower())
     store_cfg: Dict[str, Any] = {
         "provider": "local",
         "path": str(args.store_path or "").strip() or default_store_path(),
@@ -401,10 +634,15 @@ def _coerce_state(value: str, *, default: VersionState) -> VersionState:
     return VersionState(raw)
 
 
-def _build_pipeline_from_args(args: argparse.Namespace) -> DocumentBuildPipeline:
+def _build_pipeline_from_args(
+    args: argparse.Namespace,
+    *,
+    require_real_llm: bool = False,
+    logger: StageLogger = None,
+) -> DocumentBuildPipeline:
     """Constructs the default document pipeline for CLI commands."""
 
-    sdk = _build_sdk_from_args(args)
+    sdk = _build_sdk_from_args(args, require_real_llm=require_real_llm)
     taxonomy, _, _, _ = _resolve_taxonomy_context(
         domain=str(getattr(args, "domain", "") or "").strip(),
         domain_type=str(getattr(args, "domain_type", "") or "").strip(),
@@ -416,7 +654,7 @@ def _build_pipeline_from_args(args: argparse.Namespace) -> DocumentBuildPipeline
     return build_default_document_pipeline(
         sdk=sdk,
         registry_root=str(args.registry_root or "").strip(),
-        logger=(None if bool(args.quiet) else print),
+        logger=(None if bool(args.quiet) else logger or print),
         document_ingestor=HeuristicDocumentIngestor(
             llm_config=dict(getattr(getattr(sdk, "config", None), "llm", {}) or {}),
             max_section_chars=int(getattr(args, "max_section_chars", 0) or 0) or DEFAULT_MAX_SECTION_CHARS,
@@ -429,11 +667,17 @@ def _build_pipeline_from_args(args: argparse.Namespace) -> DocumentBuildPipeline
             overlap_chars=int(args.overlap_chars or 0),
             max_candidates_per_unit=int(args.max_candidates_per_unit or 0) or 3,
             max_units_per_document=int(args.max_units_per_document or 0),
+            extract_workers=max(1, int(getattr(args, "extract_workers", 1) or 1)),
+            extract_retries=max(0, int(getattr(args, "extract_retries", 3) or 0)),
+            extract_retry_backoff_s=max(0.0, float(getattr(args, "extract_retry_backoff_s", 1.0) or 0.0)),
             domain_type=taxonomy.domain_type,
             skill_taxonomy_path=str(getattr(args, "skill_taxonomy", "") or "").strip(),
             taxonomy=taxonomy,
         ),
         taxonomy=taxonomy,
+        extract_workers=max(1, int(getattr(args, "extract_workers", 1) or 1)),
+        extract_retries=max(0, int(getattr(args, "extract_retries", 3) or 0)),
+        extract_retry_backoff_s=max(0.0, float(getattr(args, "extract_retry_backoff_s", 1.0) or 0.0)),
     )
 
 
@@ -578,12 +822,13 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--quiet", action="store_true", help="Suppress stage logs and only print final output.")
     parser.add_argument("--max-documents", type=int, default=0, help="Limit how many files are read when --file points to a directory. 0 means no limit.")
 
-    parser.add_argument("--llm-provider", default="mock", help="LLM provider id used by AutoSkill4Doc.")
+    parser.add_argument("--llm-provider", default="", help="LLM provider id used by AutoSkill4Doc. Defaults to auto-detection from environment.")
     parser.add_argument("--llm-model", default="", help="LLM model id.")
     parser.add_argument("--llm-base-url", default="", help="Optional LLM base URL.")
     parser.add_argument("--llm-api-key", default="", help=argparse.SUPPRESS)
     parser.add_argument("--auth-mode", default="", help=argparse.SUPPRESS)
     parser.add_argument("--llm-response", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--allow-mock-provider", action="store_true", help=argparse.SUPPRESS)
 
     parser.add_argument("--embeddings-provider", default="", help="Embeddings provider id.")
     parser.add_argument("--embeddings-model", default="", help="Embeddings model id.")
@@ -632,6 +877,24 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=0,
         help="Limit how many extraction windows/units are sent to the model per document. 0 means no limit.",
+    )
+    parser.add_argument(
+        "--extract-workers",
+        type=int,
+        default=1,
+        help="Document-level extraction workers. Each worker processes one document at a time; windows inside one document remain sequential.",
+    )
+    parser.add_argument(
+        "--extract-retries",
+        type=int,
+        default=3,
+        help="Retries for transient extraction failures such as rate limits, overload, or temporary network errors.",
+    )
+    parser.add_argument(
+        "--extract-retry-backoff-s",
+        type=float,
+        default=1.0,
+        help="Base backoff seconds for extract retries; exponential backoff is applied per retry.",
     )
 
 
@@ -780,23 +1043,38 @@ def _print_errors(errors: List[Dict[str, Any]]) -> None:
         print(f"- {json.dumps(item, ensure_ascii=False, sort_keys=True)}")
 
 
+def _build_cli_progress_reporter(args: argparse.Namespace) -> _CliExtractProgressReporter:
+    """Builds the optional CLI extraction progress view."""
+
+    return _CliExtractProgressReporter(
+        enabled=(not bool(getattr(args, "quiet", False))),
+        stream=(sys.stderr if bool(getattr(args, "json", False)) else sys.stdout),
+    )
+
+
 def _run_build(args: argparse.Namespace) -> None:
     """Runs the full document build flow."""
 
-    pipeline = _build_pipeline_from_args(args)
-    result = pipeline.build(
-        user_id=str(args.user_id or "").strip() or DEFAULT_DOC_SKILL_USER_ID,
-        file_path=str(args.file or "").strip(),
-        title=str(args.title or "").strip(),
-        source_type=str(args.source_type or "").strip() or "document",
-        domain=str(args.domain or "").strip(),
-        metadata=_base_metadata(args),
-        continue_on_error=bool(args.continue_on_error),
-        dry_run=bool(args.dry_run),
-        target_state=_coerce_state(str(args.target_state or ""), default=VersionState.ACTIVE),
-        max_documents=int(args.max_documents or 0),
-        extract_strategy=normalize_extract_strategy(args.extract_strategy),
-    )
+    reporter = _build_cli_progress_reporter(args)
+    pipeline = _build_pipeline_from_args(args, require_real_llm=True, logger=reporter)
+    try:
+        result = pipeline.build(
+            user_id=str(args.user_id or "").strip() or DEFAULT_DOC_SKILL_USER_ID,
+            file_path=str(args.file or "").strip(),
+            title=str(args.title or "").strip(),
+            source_type=str(args.source_type or "").strip() or "document",
+            domain=str(args.domain or "").strip(),
+            metadata=_base_metadata(args),
+            continue_on_error=bool(args.continue_on_error),
+            dry_run=bool(args.dry_run),
+            target_state=_coerce_state(str(args.target_state or ""), default=VersionState.ACTIVE),
+            max_documents=int(args.max_documents or 0),
+            extract_strategy=normalize_extract_strategy(args.extract_strategy),
+            extract_progress_callback=reporter.on_extract_progress,
+            stage_progress_callback=reporter.on_stage_progress,
+        )
+    finally:
+        reporter.finish()
     payload = _build_summary(pipeline=pipeline, result=result)
     if bool(args.json):
         _print_json(payload)
@@ -824,7 +1102,7 @@ def _run_build(args: argparse.Namespace) -> None:
 def _run_ingest(args: argparse.Namespace) -> None:
     """Runs only the ingestion stage."""
 
-    pipeline = _build_pipeline_from_args(args)
+    pipeline = _build_pipeline_from_args(args, require_real_llm=False)
     result = _ingest_for_cli(pipeline, args, dry_run=bool(args.dry_run))
     resolved_md = _resolved_run_metadata(pipeline, args=args, documents=result.documents)
     payload = {
@@ -854,10 +1132,20 @@ def _run_ingest(args: argparse.Namespace) -> None:
 def _run_extract(args: argparse.Namespace) -> None:
     """Runs through direct skill extraction only."""
 
-    pipeline = _build_pipeline_from_args(args)
+    reporter = _build_cli_progress_reporter(args)
+    pipeline = _build_pipeline_from_args(args, require_real_llm=True, logger=reporter)
     ingest_result = _ingest_for_cli(pipeline, args, dry_run=bool(args.dry_run))
     resolved_md = _resolved_run_metadata(pipeline, args=args, documents=ingest_result.documents)
-    extracted_result = pipeline.extract_skills(documents=ingest_result.documents, windows=ingest_result.windows)
+    reporter.set_total_documents(len(list(ingest_result.documents or [])))
+    try:
+        extracted_result = pipeline.extract_skills(
+            documents=ingest_result.documents,
+            windows=ingest_result.windows,
+            progress_callback=reporter.on_extract_progress,
+            stage_progress_callback=reporter.on_stage_progress,
+        )
+    finally:
+        reporter.finish()
     payload = {
         "family_name": str(resolved_md.get("family_name") or "").strip() or None,
         "family_id": str(resolved_md.get("family_id") or "").strip() or None,
@@ -887,15 +1175,26 @@ def _run_extract(args: argparse.Namespace) -> None:
 def _run_compile(args: argparse.Namespace) -> None:
     """Runs through canonical skill compilation without registry writes."""
 
-    pipeline = _build_pipeline_from_args(args)
+    reporter = _build_cli_progress_reporter(args)
+    pipeline = _build_pipeline_from_args(args, require_real_llm=True, logger=reporter)
     ingest_result = _ingest_for_cli(pipeline, args, dry_run=True)
     resolved_md = _resolved_run_metadata(pipeline, args=args, documents=ingest_result.documents)
-    extracted_result = pipeline.extract_skills(documents=ingest_result.documents, windows=ingest_result.windows)
-    compiled_result = pipeline.compile_skills(
-        skill_drafts=extracted_result.skill_drafts,
-        support_records=extracted_result.support_records,
-        target_state=_coerce_state(str(args.target_state or ""), default=VersionState.DRAFT),
-    )
+    reporter.set_total_documents(len(list(ingest_result.documents or [])))
+    try:
+        extracted_result = pipeline.extract_skills(
+            documents=ingest_result.documents,
+            windows=ingest_result.windows,
+            progress_callback=reporter.on_extract_progress,
+            stage_progress_callback=reporter.on_stage_progress,
+        )
+        compiled_result = pipeline.compile_skills(
+            skill_drafts=extracted_result.skill_drafts,
+            support_records=extracted_result.support_records,
+            target_state=_coerce_state(str(args.target_state or ""), default=VersionState.DRAFT),
+            progress_callback=reporter.on_stage_progress,
+        )
+    finally:
+        reporter.finish()
     payload = {
         "family_name": str(resolved_md.get("family_name") or "").strip() or None,
         "family_id": str(resolved_md.get("family_id") or "").strip() or None,
@@ -929,7 +1228,7 @@ def _run_compile(args: argparse.Namespace) -> None:
 def _run_diag(args: argparse.Namespace) -> None:
     """Runs the non-persisting diagnostic extract flow."""
 
-    pipeline = _build_pipeline_from_args(args)
+    pipeline = _build_pipeline_from_args(args, require_real_llm=True)
     diag_metadata = _base_metadata(args)
     ingest_result = pipeline.ingest_document(
         file_path=str(args.file or "").strip(),
@@ -1119,31 +1418,37 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     command = str(args.command or "build").strip() or "build"
     if command in {"build", "llm-extract", "ingest", "extract", "compile", "diag"} and not str(args.file or "").strip():
         parser.error("--file is required for CLI commands. Use extract_from_doc(...) for in-memory data.")
-    if command in {"build", "llm-extract"}:
-        _run_build(args)
-        return
-    if command == "ingest":
-        _run_ingest(args)
-        return
-    if command == "extract":
-        _run_extract(args)
-        return
-    if command == "compile":
-        _run_compile(args)
-        return
-    if command == "diag":
-        _run_diag(args)
-        return
-    if command == "retrieve-hierarchy":
-        _run_retrieve_hierarchy(args)
-        return
-    if command == "canonical-merge":
-        _run_canonical_merge(args)
-        return
-    if command == "migrate-layout":
-        _run_migrate_layout(args)
-        return
-    raise ValueError(f"unsupported command: {command}")
+    try:
+        if command in {"build", "llm-extract"}:
+            _run_build(args)
+            return
+        if command == "ingest":
+            _run_ingest(args)
+            return
+        if command == "extract":
+            _run_extract(args)
+            return
+        if command == "compile":
+            _run_compile(args)
+            return
+        if command == "diag":
+            _run_diag(args)
+            return
+        if command == "retrieve-hierarchy":
+            _run_retrieve_hierarchy(args)
+            return
+        if command == "canonical-merge":
+            _run_canonical_merge(args)
+            return
+        if command == "migrate-layout":
+            _run_migrate_layout(args)
+            return
+        raise ValueError(f"unsupported command: {command}")
+    except ValueError as exc:
+        message = str(exc or "").strip()
+        if "family_name" in message and "family_candidates" in message:
+            parser.error(message)
+        raise
 
 
 if __name__ == "__main__":

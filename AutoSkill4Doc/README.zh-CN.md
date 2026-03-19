@@ -33,7 +33,11 @@ document
 - 独立 CLI：`autoskill4doc ...` 或 `python -m AutoSkill4Doc ...`
 - 基于 `content_hash` 的增量跳过
 - section 过滤、strict/recommended 窗口切分
-- 规则优先的章节识别；当标题规则失效或识别出的结构明显过弱时，可触发一次 outline 级 LLM fallback
+- 支持 `--extract-workers` 的文档级并行抽取；同一篇文档内部仍按原顺序逐个 window 抽取，最终结果按输入文档顺序归并
+- 非 `--quiet` CLI 运行时，会显示单行实时的多阶段进度：抽取阶段展示文档和 window 进度，后续阶段展示 compile 分组和 register 技能进度
+- 抽取阶段遇到限流、短时过载或瞬时网络错误时会做指数退避重试，而不是直接丢掉文档；可用 `--extract-retries` 和 `--extract-retry-backoff-s` 调整
+- 如果某篇文档在重试后仍失败，AutoSkill4Doc 会按文档记录失败并继续处理整批其它文档，而不是整批直接中断
+- 规则负责召回候选标题；在 `section-outline-mode=auto` 且提供了 LLM 时，每篇文档最多做一次 outline 级 LLM 结构分类，用来判断 section / subsection 层级
 - 支持 dry-run 和分阶段执行
 - 支持 provenance/change log/version history
 - 支持生命周期状态：`candidate -> draft -> evaluating -> active -> watchlist -> deprecated -> retired`
@@ -133,6 +137,8 @@ document
 构建还会把阶段快照持续写到 `.runtime/intermediate_runs/<run_id>/`。如果任务在
 ingest / extract / compile / register 之后中断，重新用相同输入和配置启动时，
 会自动复用最近一次未完成 run 的阶段快照继续执行，而不是从头再抽取一遍。
+单篇文档的抽取失败也会落到 `extract/documents/<doc_id>.json`，因此长任务可以以
+“部分成功 + 明确失败文档清单”的形式结束，而不是只能全成或全挂。
 
 ## 总技能 / 子技能是如何生成的
 
@@ -143,7 +149,7 @@ ingest / extract / compile / register 之后中断，重新用相同输入和配
      - 支持 markdown 标题以及 `3`、`3.1`、`第3章`、`（一）` 这类编号章节
      - window 规划时会先按根章节分组，因此像 `4.1 / 4.2 / 5.1` 这样的子章节会归到 `4 ...` / `5 ...` 这类大章节下面，而不是被当成独立顶层切片单位
      - 每个 window 都会附带 `heading_path`、`parent_heading`、`sibling_headings`、`subsection_headings` 等层级上下文
-     - 如果规则无法识别章节层级，或者只识别出明显过弱的部分结构，AutoSkill4Doc 最多会对每篇文档做一次紧凑的 outline LLM 判断，用来区分章节和子章节
+     - 规则先召回可能为标题的行；如果提供了 LLM，AutoSkill4Doc 会对这些候选做一次紧凑的 outline LLM 分类，用来判断章节和子章节层级
      - 超长章节会先预切片，再进入最终 window 规划；默认 `--max-section-chars` 为 `10000`
      - 参考文献 / bibliography 类章节会在抽取前被跳过
    - `extract` 负责从 window 提取 `SupportRecord + SkillDraft`
@@ -304,6 +310,12 @@ provider 配置不是文件，而是环境变量。常用项包括：
 - GLM：`ZHIPUAI_API_KEY` 或 `BIGMODEL_API_KEY`
 - Generic backend：`AUTOSKILL_GENERIC_LLM_URL`、`AUTOSKILL_GENERIC_EMBED_URL`
 
+补充说明：
+
+- 用户侧抽取命令（`build`、`llm-extract`、`extract`、`compile`、`diag`）现在不会再静默回退到 `mock`
+- 如果当前环境里解析不到真实 provider，AutoSkill4Doc 会直接报错，而不是进入仅供测试使用的 mock 行为
+- `mock` 只保留给开发/测试路径
+
 解析优先级：
 
 - 显式 CLI 参数
@@ -318,8 +330,8 @@ provider 配置不是文件，而是环境变量。常用项包括：
   - 一个检测到的章节如果过长，会先按这个上限预切片，再构造最终 extraction windows
   - 默认：`10000`
 - `--section-outline-mode auto|off`
-  - `auto`：当规则化标题检测失败时，对整篇文档最多做一次紧凑的 outline LLM 判断
-  - `off`：完全关闭这层 outline LLM fallback
+  - `auto`：如果提供了 LLM，对每篇文档的候选标题做一次紧凑的 outline LLM 层级分类；规则负责召回候选和兜底
+  - `off`：完全关闭这层 outline LLM 分类，只使用规则判断
 
 ## 流程是否合理
 

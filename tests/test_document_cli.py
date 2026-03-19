@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from autoskill.cli import main as autoskill_main
 from AutoSkill4Doc import (
@@ -125,6 +126,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--json",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",
@@ -159,6 +161,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--json",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",
@@ -252,6 +255,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--json",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",
@@ -302,6 +306,7 @@ class DocumentCliTest(unittest.TestCase):
                         "--json",
                         "--llm-provider",
                         "mock",
+                        "--allow-mock-provider",
                         "--llm-response",
                         self._mock_response(),
                         "--maintenance-strategy",
@@ -366,11 +371,55 @@ class DocumentCliTest(unittest.TestCase):
         self.assertTrue(args.continue_on_error)
         self.assertEqual(args.extract_strategy, "recommended")
         self.assertEqual(args.embeddings_dims, 256)
+        self.assertEqual(args.extract_workers, 1)
+
+    def test_document_cli_accepts_extract_workers(self) -> None:
+        args = build_parser().parse_args(["build", "--file", "/tmp/paper.md", "--extract-workers", "4"])
+
+        self.assertEqual(args.extract_workers, 4)
+
+    def test_document_cli_accepts_extract_retry_controls(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "build",
+                "--file",
+                "/tmp/paper.md",
+                "--extract-retries",
+                "5",
+                "--extract-retry-backoff-s",
+                "0.25",
+            ]
+        )
+
+        self.assertEqual(args.extract_retries, 5)
+        self.assertAlmostEqual(args.extract_retry_backoff_s, 0.25)
 
     def test_document_cli_supports_fail_fast_flag(self) -> None:
         args = build_parser().parse_args(["build", "--file", "/tmp/paper.md", "--fail-fast"])
 
         self.assertFalse(args.continue_on_error)
+
+    def test_document_cli_rejects_mock_provider_without_dev_override(self) -> None:
+        args = build_parser().parse_args(["build", "--file", "/tmp/paper.md", "--llm-provider", "mock"])
+
+        with self.assertRaises(SystemExit):
+            _build_sdk_from_args(args, require_real_llm=True)
+
+    def test_document_cli_requires_real_provider_when_env_has_none(self) -> None:
+        args = build_parser().parse_args(["build", "--file", "/tmp/paper.md"])
+        cleared = {
+            "AUTOSKILL_GENERIC_LLM_URL": "",
+            "DASHSCOPE_API_KEY": "",
+            "ZHIPUAI_API_KEY": "",
+            "BIGMODEL_API_KEY": "",
+            "INTERNLM_API_KEY": "",
+            "INTERN_API_KEY": "",
+            "OPENAI_API_KEY": "",
+            "ANTHROPIC_API_KEY": "",
+        }
+        with patch.dict(os.environ, cleared, clear=False):
+            with self.assertRaises(SystemExit):
+                _build_sdk_from_args(args, require_real_llm=True)
 
     def test_build_without_file_shows_parser_error_instead_of_traceback(self) -> None:
         buf = io.StringIO()
@@ -380,6 +429,41 @@ class DocumentCliTest(unittest.TestCase):
 
         self.assertEqual(int(getattr(ctx.exception, "code", 0) or 0), 2)
         self.assertIn("--file is required for CLI commands", buf.getvalue())
+
+    def test_build_rejects_family_name_outside_configured_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_path = self._write_doc(root=tmpdir)
+            buf = io.StringIO()
+            with redirect_stderr(buf):
+                with self.assertRaises(SystemExit) as ctx:
+                    main(
+                        [
+                            "build",
+                            "--file",
+                            doc_path,
+                            "--dry-run",
+                            "--quiet",
+                            "--json",
+                            "--llm-provider",
+                            "mock",
+                            "--allow-mock-provider",
+                            "--llm-response",
+                            self._mock_response(),
+                            "--maintenance-strategy",
+                            "llm",
+                            "--domain",
+                            "psychology",
+                            "--domain-type",
+                            "psychology",
+                            "--family-name",
+                            "不存在的流派",
+                            "--store-path",
+                            tmpdir,
+                        ]
+                    )
+
+            self.assertEqual(int(getattr(ctx.exception, "code", 0) or 0), 2)
+            self.assertIn("family_name '不存在的流派' is not in configured family_candidates", buf.getvalue())
 
     def test_build_without_quiet_shows_document_and_skill_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -393,6 +477,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--dry-run",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",
@@ -405,7 +490,62 @@ class DocumentCliTest(unittest.TestCase):
             self.assertIn("[ingest_document] prepared", output)
             self.assertIn("document.md", output)
             self.assertIn("[extract_skills] done", output)
+            self.assertIn("[extract_progress]", output)
+            self.assertIn("windows=1/1", output)
+            self.assertIn("[compile_progress]", output)
+            self.assertIn("[register_progress]", output)
             self.assertIn("document intake workflow", output)
+
+    def test_extract_without_quiet_shows_realtime_progress_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_path = self._write_doc(root=tmpdir)
+            output = self._run_text(
+                main,
+                [
+                    "extract",
+                    "--file",
+                    doc_path,
+                    "--dry-run",
+                    "--llm-provider",
+                    "mock",
+                    "--allow-mock-provider",
+                    "--llm-response",
+                    self._mock_response(),
+                    "--maintenance-strategy",
+                    "llm",
+                    "--store-path",
+                    tmpdir,
+                ],
+            )
+
+            self.assertIn("[extract_progress]", output)
+            self.assertIn("1/1 docs", output)
+            self.assertIn("windows=1/1", output)
+
+    def test_compile_without_quiet_shows_compile_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_path = self._write_doc(root=tmpdir)
+            output = self._run_text(
+                main,
+                [
+                    "compile",
+                    "--file",
+                    doc_path,
+                    "--dry-run",
+                    "--llm-provider",
+                    "mock",
+                    "--allow-mock-provider",
+                    "--llm-response",
+                    self._mock_response(),
+                    "--maintenance-strategy",
+                    "llm",
+                    "--store-path",
+                    tmpdir,
+                ],
+            )
+
+            self.assertIn("[extract_progress]", output)
+            self.assertIn("[compile_progress]", output)
 
     def test_llm_extract_alias_behaves_like_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -419,6 +559,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--json",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",
@@ -438,6 +579,35 @@ class DocumentCliTest(unittest.TestCase):
             self.assertEqual(payload["visible_tree"]["affected_families"], ["认知行为疗法"])
             self.assertGreaterEqual(len(list(payload.get("staging_runs") or [])), 1)
 
+    def test_build_json_without_quiet_keeps_stdout_machine_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_path = self._write_doc(root=tmpdir)
+            stdout_buf = io.StringIO()
+            stderr_buf = io.StringIO()
+            with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+                main(
+                    [
+                        "build",
+                        "--file",
+                        doc_path,
+                        "--dry-run",
+                        "--json",
+                        "--llm-provider",
+                        "mock",
+                        "--allow-mock-provider",
+                        "--llm-response",
+                        self._mock_response(),
+                        "--maintenance-strategy",
+                        "llm",
+                        "--store-path",
+                        tmpdir,
+                    ]
+                )
+
+            payload = json.loads(stdout_buf.getvalue().strip())
+            self.assertEqual(payload["total_documents"], 1)
+            self.assertIn("[extract_progress]", stderr_buf.getvalue())
+
     def test_diag_command_writes_jsonl_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             doc_path = self._write_doc(root=tmpdir)
@@ -451,6 +621,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--json",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",
@@ -479,6 +650,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--json",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",
@@ -538,6 +710,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--json",
                     "--llm-provider",
                     "mock",
+                    "--allow-mock-provider",
                     "--llm-response",
                     self._mock_response(),
                     "--maintenance-strategy",

@@ -26,6 +26,7 @@ from .core.config import (
     DEFAULT_MAX_SECTION_CHARS,
     default_store_path,
 )
+from .core.provider_config import allow_mock_provider, ensure_runtime_llm_provider
 from .stages.compiler import (
     SkillCompilationResult,
     SkillCompiler,
@@ -125,6 +126,18 @@ class DocumentBuildPipeline:
         self.family_resolver = family_resolver or build_document_family_resolver(taxonomy=self.taxonomy)
         self.logger = logger
 
+    def _ensure_runtime_llm(self, *, context: str) -> None:
+        """Prevents user-facing extraction paths from silently using mock."""
+
+        llm_cfg = dict(getattr(getattr(self.sdk, "config", None), "llm", {}) or {})
+        if not llm_cfg:
+            return
+        ensure_runtime_llm_provider(
+            str(llm_cfg.get("provider") or ""),
+            context=context,
+            allow_mock=allow_mock_provider(llm_cfg),
+        )
+
     def _run_taxonomy(
         self,
         *,
@@ -178,6 +191,9 @@ class DocumentBuildPipeline:
                 overlap_chars=int(getattr(current, "overlap_chars", 0) or 0),
                 max_candidates_per_unit=int(getattr(current, "max_candidates_per_unit", 3) or 3),
                 max_units_per_document=int(getattr(current, "max_units_per_document", 0) or 0),
+                extract_workers=int(getattr(current, "extract_workers", 1) or 1),
+                extract_retries=int(getattr(current, "extract_retries", 3) or 0),
+                extract_retry_backoff_s=float(getattr(current, "extract_retry_backoff_s", 1.0) or 0.0),
                 taxonomy=taxonomy,
             )
         return current
@@ -302,17 +318,40 @@ class DocumentBuildPipeline:
         documents: List[DocumentRecord],
         windows: Optional[List[StrictWindow]] = None,
         taxonomy: Optional[SkillTaxonomy] = None,
+        extract_workers: Optional[int] = None,
         progress_callback=None,
+        stage_progress_callback=None,
         accumulate_result: bool = True,
     ) -> SkillExtractionResult:
         """Runs the direct skill extraction stage only."""
 
+        self._ensure_runtime_llm(context="AutoSkill4Doc extract_skills")
+        extractor = self._extractor_for_taxonomy(taxonomy or self.taxonomy)
+        if (
+            extract_workers is not None
+            and isinstance(extractor, LLMDocumentSkillExtractor)
+            and int(getattr(extractor, "extract_workers", 1) or 1) != max(1, int(extract_workers or 1))
+        ):
+            extractor = build_document_skill_extractor(
+                "llm",
+                llm=getattr(extractor, "_llm", None),
+                llm_config=dict(getattr(extractor, "_llm_config", {}) or {}),
+                max_section_chars=int(getattr(extractor, "max_section_chars", DEFAULT_MAX_SECTION_CHARS) or DEFAULT_MAX_SECTION_CHARS),
+                overlap_chars=int(getattr(extractor, "overlap_chars", 0) or 0),
+                max_candidates_per_unit=int(getattr(extractor, "max_candidates_per_unit", 3) or 3),
+                max_units_per_document=int(getattr(extractor, "max_units_per_document", 0) or 0),
+                extract_workers=max(1, int(extract_workers or 1)),
+                extract_retries=int(getattr(extractor, "extract_retries", 3) or 0),
+                extract_retry_backoff_s=float(getattr(extractor, "extract_retry_backoff_s", 1.0) or 0.0),
+                taxonomy=getattr(extractor, "taxonomy", None),
+            )
         return extract_skills(
             documents=list(documents or []),
             windows=list(windows or []),
-            extractor=self._extractor_for_taxonomy(taxonomy or self.taxonomy),
+            extractor=extractor,
             logger=self.logger,
             progress_callback=progress_callback,
+            stage_progress_callback=stage_progress_callback,
             accumulate_result=accumulate_result,
         )
 
@@ -322,15 +361,18 @@ class DocumentBuildPipeline:
         skill_drafts: List[SkillDraft],
         support_records: List[SupportRecord],
         target_state: VersionState = VersionState.DRAFT,
+        progress_callback=None,
     ) -> SkillCompilationResult:
         """Runs the skill compilation stage only."""
 
+        self._ensure_runtime_llm(context="AutoSkill4Doc compile_skills")
         return compile_skills(
             skill_drafts=list(skill_drafts or []),
             support_records=list(support_records or []),
             compiler=self.skill_compiler,
             target_state=target_state,
             logger=self.logger,
+            progress_callback=progress_callback,
         )
 
     def register_versions(
@@ -343,9 +385,11 @@ class DocumentBuildPipeline:
         metadata: Optional[Dict[str, Any]] = None,
         dry_run: bool = False,
         target_state: VersionState = VersionState.ACTIVE,
+        progress_callback=None,
     ) -> VersionRegistrationResult:
         """Runs the registry/version registration stage only."""
 
+        self._ensure_runtime_llm(context="AutoSkill4Doc register_versions")
         return register_versions(
             registry=self.registry,
             documents=list(documents or []),
@@ -357,6 +401,7 @@ class DocumentBuildPipeline:
             dry_run=dry_run,
             target_state=target_state,
             logger=self.logger,
+            progress_callback=progress_callback,
         )
 
     def build(
@@ -374,9 +419,12 @@ class DocumentBuildPipeline:
         target_state: Optional[VersionState] = None,
         max_documents: int = 0,
         extract_strategy: str = DEFAULT_EXTRACT_STRATEGY,
+        extract_progress_callback=None,
+        stage_progress_callback=None,
     ) -> DocumentBuildResult:
         """Runs the full offline document build pipeline."""
 
+        self._ensure_runtime_llm(context="AutoSkill4Doc build")
         effective_state = target_state or (VersionState.DRAFT if dry_run else VersionState.ACTIVE)
         intermediate_writer = None
         intermediate_summary: Dict[str, Any] = {}
@@ -455,12 +503,42 @@ class DocumentBuildPipeline:
             document.metadata.update(resolved_metadata)
         for document in list(ingest_result.skipped_documents or []):
             document.metadata.update(resolved_metadata)
+        progress_owner = extract_progress_callback
+        if (
+            progress_owner is not None
+            and not hasattr(progress_owner, "set_total_documents")
+            and hasattr(progress_owner, "__self__")
+        ):
+            progress_owner = getattr(progress_owner, "__self__", progress_owner)
+        if progress_owner is not None and hasattr(progress_owner, "set_total_documents"):
+            completed_docs = 0
+            if intermediate_writer is not None:
+                completed_docs = len(intermediate_writer.processed_extract_doc_ids())
+            try:
+                progress_owner.set_total_documents(
+                    len(list(ingest_result.documents or [])),
+                    completed=completed_docs,
+                    total_windows=len(list(ingest_result.windows or [])),
+                    completed_windows=len(
+                        [
+                            window
+                            for window in list(ingest_result.windows or [])
+                            if str(window.doc_id or "").strip() in set(intermediate_writer.processed_extract_doc_ids())
+                        ]
+                    )
+                    if intermediate_writer is not None
+                    else 0,
+                )
+            except Exception:
+                pass
         try:
             if intermediate_writer is not None:
                 extracted_result = self._resume_or_extract(
                     intermediate_writer=intermediate_writer,
                     ingest_result=ingest_result,
                     taxonomy=effective_taxonomy,
+                    extract_progress_callback=extract_progress_callback,
+                    stage_progress_callback=stage_progress_callback,
                 )
                 intermediate_summary = intermediate_writer.summary().to_dict()
             else:
@@ -468,7 +546,10 @@ class DocumentBuildPipeline:
                     documents=ingest_result.documents,
                     windows=ingest_result.windows,
                     taxonomy=effective_taxonomy,
+                    extract_workers=int(getattr(self.document_skill_extractor, "extract_workers", 1) or 1),
                     accumulate_result=True,
+                    progress_callback=extract_progress_callback,
+                    stage_progress_callback=stage_progress_callback,
                 )
             if intermediate_writer is not None and intermediate_writer.has_completed_stage("compile"):
                 compiled_result = intermediate_writer.load_compile()
@@ -477,6 +558,7 @@ class DocumentBuildPipeline:
                     skill_drafts=extracted_result.skill_drafts,
                     support_records=extracted_result.support_records,
                     target_state=effective_state,
+                    progress_callback=stage_progress_callback,
                 )
                 if intermediate_writer is not None:
                     intermediate_writer.write_compile(compiled_result)
@@ -492,6 +574,7 @@ class DocumentBuildPipeline:
                     metadata=resolved_metadata,
                     dry_run=dry_run,
                     target_state=effective_state,
+                    progress_callback=stage_progress_callback,
                 )
                 if intermediate_writer is not None:
                     intermediate_writer.write_registration(registration_result)
@@ -565,6 +648,8 @@ class DocumentBuildPipeline:
         intermediate_writer: IntermediateRunWriter,
         ingest_result: DocumentIngestResult,
         taxonomy: SkillTaxonomy,
+        extract_progress_callback=None,
+        stage_progress_callback=None,
     ) -> SkillExtractionResult:
         """Loads persisted extract progress when possible and continues remaining docs only."""
 
@@ -576,20 +661,40 @@ class DocumentBuildPipeline:
         if not remaining_docs:
             intermediate_writer.write_extract(persisted)
             return persisted
+        remaining_docs_by_id = {str(doc.doc_id or "").strip(): doc for doc in remaining_docs}
         remaining_doc_ids = {str(doc.doc_id or "").strip() for doc in remaining_docs}
         remaining_windows = [window for window in list(ingest_result.windows or []) if str(window.doc_id or "").strip() in remaining_doc_ids]
         fresh = self.extract_skills(
             documents=remaining_docs,
             windows=remaining_windows,
             taxonomy=taxonomy,
+            extract_workers=int(getattr(self.document_skill_extractor, "extract_workers", 1) or 1),
             accumulate_result=True,
-            progress_callback=lambda record, supports, drafts, cumulative: intermediate_writer.write_extract_progress(
+            progress_callback=lambda record, supports, drafts, cumulative: self._on_resume_extract_progress(
+                intermediate_writer=intermediate_writer,
+                ingest_result=ingest_result,
+                extract_progress_callback=extract_progress_callback,
                 record=record,
                 supports=supports,
                 drafts=drafts,
-                total_documents=len(ingest_result.documents),
+                cumulative=cumulative,
             ),
+            stage_progress_callback=stage_progress_callback,
         )
+        written_error_doc_ids = set()
+        for error in list(fresh.errors or []):
+            if not isinstance(error, dict):
+                continue
+            doc_id = str(error.get("doc_id") or "").strip()
+            record = remaining_docs_by_id.get(doc_id)
+            if record is None or doc_id in written_error_doc_ids:
+                continue
+            intermediate_writer.write_extract_error(
+                record=record,
+                error=dict(error or {}),
+                total_documents=len(ingest_result.documents),
+            )
+            written_error_doc_ids.add(doc_id)
         supports_by_id = {support.support_id: support for support in list(persisted.support_records or [])}
         for support in list(fresh.support_records or []):
             supports_by_id[support.support_id] = support
@@ -608,6 +713,28 @@ class DocumentBuildPipeline:
         intermediate_writer.write_extract(merged)
         return merged
 
+    @staticmethod
+    def _on_resume_extract_progress(
+        *,
+        intermediate_writer: IntermediateRunWriter,
+        ingest_result: DocumentIngestResult,
+        extract_progress_callback,
+        record: DocumentRecord,
+        supports: List[SupportRecord],
+        drafts: List[SkillDraft],
+        cumulative: SkillExtractionResult,
+    ) -> None:
+        """Combines intermediate persistence with optional external progress reporting."""
+
+        intermediate_writer.write_extract_progress(
+            record=record,
+            supports=supports,
+            drafts=drafts,
+            total_documents=len(ingest_result.documents),
+        )
+        if extract_progress_callback is not None:
+            extract_progress_callback(record, supports, drafts, cumulative)
+
 
 def build_default_document_pipeline(
     *,
@@ -619,6 +746,9 @@ def build_default_document_pipeline(
     skill_compiler: Optional[SkillCompiler] = None,
     taxonomy: Optional[SkillTaxonomy] = None,
     family_resolver: Optional[DocumentFamilyResolver] = None,
+    extract_workers: int = 1,
+    extract_retries: int = 3,
+    extract_retry_backoff_s: float = 1.0,
 ) -> DocumentBuildPipeline:
     """Builds the default staged document pipeline."""
 
@@ -645,6 +775,9 @@ def build_default_document_pipeline(
         or build_document_skill_extractor(
             "llm",
             llm_config=dict(getattr(getattr(sdk, "config", None), "llm", {}) or {}),
+            extract_workers=max(1, int(extract_workers or 1)),
+            extract_retries=max(0, int(extract_retries or 0)),
+            extract_retry_backoff_s=max(0.0, float(extract_retry_backoff_s or 0.0)),
         ),
         skill_compiler=skill_compiler
         or build_skill_compiler(

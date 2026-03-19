@@ -4,9 +4,12 @@ LLM-driven skill extraction stage for the offline document pipeline.
 
 from __future__ import annotations
 
+import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import json
 import re
+import time
 import uuid
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
@@ -14,7 +17,15 @@ from autoskill.llm.base import LLM
 from autoskill.llm.factory import build_llm
 from autoskill.models import SkillExample
 
-from ..core.common import StageLogger, document_progress_label, emit_stage_log, normalize_text, summarize_names
+from ..core.common import (
+    StageLogger,
+    StageProgressCallback,
+    document_progress_label,
+    emit_stage_log,
+    emit_stage_progress,
+    normalize_text,
+    summarize_names,
+)
 from ..core.llm_utils import (
     clip_confidence,
     coerce_str_list,
@@ -38,6 +49,8 @@ _WORKFLOW_PATTERNS = [r"^\s*[\-\*\u2022]\s+", r"^\s*\d+[\.\)]\s+"]
 _DEFAULT_SECTION_CHARS = 2400
 _DEFAULT_CHUNK_OVERLAP_CHARS = 200
 _DEFAULT_MAX_CANDIDATES_PER_UNIT = 3
+_DEFAULT_EXTRACT_RETRIES = 3
+_DEFAULT_EXTRACT_RETRY_BACKOFF_S = 1.0
 _DEFAULT_SECTION_PRIORITY_TERMS = (
     "goal",
     "session goal",
@@ -116,6 +129,49 @@ def _split_section_blocks(text: str) -> List[str]:
             continue
         blocks.append(paragraph)
     return blocks
+
+
+def _is_retryable_extract_error(exc: Exception) -> bool:
+    """Returns whether one extraction error looks transient and worth retrying."""
+
+    raw = normalize_text(str(exc or ""), lower=True)
+    if not raw:
+        return False
+    retry_tokens = (
+        "429",
+        "too many requests",
+        "rate limit",
+        "rate-limit",
+        "throttle",
+        "overload",
+        "temporarily unavailable",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "remote disconnected",
+        "try again",
+        "retry later",
+        "server error",
+        "internal server error",
+        "502",
+        "503",
+        "504",
+    )
+    return any(token in raw for token in retry_tokens)
+
+
+def _retry_backoff_seconds(*, attempt: int, base_delay_s: float) -> float:
+    """Builds one deterministic exponential backoff delay."""
+
+    base = max(0.0, float(base_delay_s or 0.0))
+    if base <= 0.0:
+        return 0.0
+    return min(8.0, base * (2 ** max(0, int(attempt or 0))))
 
 
 def _text_span(record: DocumentRecord, *, section_start: int, text: str, cursor: int) -> TextSpan:
@@ -532,6 +588,7 @@ class DocumentSkillExtractor(Protocol):
         windows: Optional[List[StrictWindow]],
         logger: StageLogger,
         progress_callback: ExtractionProgressCallback = None,
+        stage_progress_callback: StageProgressCallback = None,
         accumulate_result: bool = True,
     ) -> SkillExtractionResult:
         """Extracts support records and skill drafts from normalized documents."""
@@ -549,18 +606,53 @@ class LLMDocumentSkillExtractor:
         overlap_chars: int = _DEFAULT_CHUNK_OVERLAP_CHARS,
         max_candidates_per_unit: int = _DEFAULT_MAX_CANDIDATES_PER_UNIT,
         max_units_per_document: int = 0,
+        extract_workers: int = 1,
+        extract_retries: int = _DEFAULT_EXTRACT_RETRIES,
+        extract_retry_backoff_s: float = _DEFAULT_EXTRACT_RETRY_BACKOFF_S,
         domain_type: str = "",
         skill_taxonomy_path: str = "",
         taxonomy: Optional[SkillTaxonomy] = None,
     ) -> None:
-        self._llm = llm or build_llm(dict(llm_config or {"provider": "mock"}))
+        self._llm_config = dict(llm_config or {})
+        self._llm = llm or build_llm(dict(self._llm_config or {"provider": "mock"}))
         self.max_section_chars = max(200, int(max_section_chars or _DEFAULT_SECTION_CHARS))
         self.overlap_chars = max(0, int(overlap_chars or 0))
         self.max_candidates_per_unit = max(1, int(max_candidates_per_unit or _DEFAULT_MAX_CANDIDATES_PER_UNIT))
         self.max_units_per_document = max(0, int(max_units_per_document or 0))
+        self.extract_workers = max(1, int(extract_workers or 1))
+        self.extract_retries = max(0, int(extract_retries or 0))
+        self.extract_retry_backoff_s = max(0.0, float(extract_retry_backoff_s or 0.0))
         self.taxonomy = taxonomy or load_skill_taxonomy(
             domain_type=str(domain_type or "").strip(),
             taxonomy_path=str(skill_taxonomy_path or "").strip(),
+        )
+
+    def _clone_llm(self) -> LLM:
+        """Builds one worker-local LLM instance for document-level parallel extraction."""
+
+        if self._llm_config:
+            return build_llm(dict(self._llm_config))
+        try:
+            cloned = copy.deepcopy(self._llm)
+        except Exception as exc:
+            raise ValueError(
+                "extract_workers>1 requires llm_config or a deepcopy-compatible llm instance"
+            ) from exc
+        return cloned
+
+    def _spawn_worker_extractor(self) -> "LLMDocumentSkillExtractor":
+        """Creates one worker-local extractor so concurrent documents do not share one LLM client."""
+
+        return LLMDocumentSkillExtractor(
+            llm=self._clone_llm(),
+            max_section_chars=self.max_section_chars,
+            overlap_chars=self.overlap_chars,
+            max_candidates_per_unit=self.max_candidates_per_unit,
+            max_units_per_document=self.max_units_per_document,
+            extract_workers=1,
+            extract_retries=self.extract_retries,
+            extract_retry_backoff_s=self.extract_retry_backoff_s,
+            taxonomy=self.taxonomy,
         )
 
     def _extract_unit_skills(
@@ -573,6 +665,7 @@ class LLMDocumentSkillExtractor:
         unit_text: str,
         unit_type: str,
         unit_metadata: Optional[Dict[str, object]] = None,
+        logger: StageLogger = None,
     ) -> List[Dict[str, object]]:
         unit_md = dict(unit_metadata or {})
         payload = {
@@ -619,13 +712,35 @@ class LLMDocumentSkillExtractor:
             f"DATA:\n{json.dumps(payload, ensure_ascii=False)}\n\n"
             f"DRAFT:\n__DRAFT__"
         )
-        parsed = llm_complete_json(
-            llm=self._llm,
-            system=system,
-            payload=payload,
-            repair_system=repair_system,
-            repair_payload=repaired_payload,
-        )
+        parsed = None
+        last_exc: Optional[Exception] = None
+        for attempt in range(max(0, self.extract_retries) + 1):
+            try:
+                parsed = llm_complete_json(
+                    llm=self._llm,
+                    system=system,
+                    payload=payload,
+                    repair_system=repair_system,
+                    repair_payload=repaired_payload,
+                )
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self.extract_retries or not _is_retryable_extract_error(exc):
+                    raise
+                delay = _retry_backoff_seconds(attempt=attempt, base_delay_s=self.extract_retry_backoff_s)
+                emit_stage_log(
+                    logger,
+                    (
+                        f"[extract_skills] retry unit doc={record.doc_id} section={section_heading} "
+                        f"attempt={attempt + 1}/{self.extract_retries + 1} delay_s={delay:.2f} error={exc}"
+                    ),
+                )
+                if delay > 0.0:
+                    time.sleep(delay)
+        if last_exc is not None and parsed is None:
+            raise last_exc
         obj = maybe_json_dict(parsed)
         raw_skills = obj.get("skills") if isinstance(obj.get("skills"), list) else parsed
         if not isinstance(raw_skills, list):
@@ -669,7 +784,10 @@ class LLMDocumentSkillExtractor:
         )
         tags = compact_text_list(coerce_str_list(item.get("tags")), limit=6)
         triggers = compact_text_list(coerce_str_list(item.get("triggers")), limit=5)
-        asset_type = self.taxonomy.normalize_asset_type(item.get("asset_type"))
+        raw_asset_type = str(item.get("asset_type") or "").strip()
+        asset_type = self.taxonomy.strict_normalize_asset_type(raw_asset_type)
+        if raw_asset_type and not asset_type:
+            return None, None
         asset_node = self.taxonomy.resolve_asset_node(
             requested=item.get("asset_node_id"),
             asset_type=asset_type,
@@ -767,13 +885,16 @@ class LLMDocumentSkillExtractor:
         *,
         record: DocumentRecord,
         windows: List[StrictWindow],
+        logger: StageLogger = None,
+        stage_progress_callback: StageProgressCallback = None,
     ) -> Tuple[List[SupportRecord], List[SkillDraft]]:
         supports: List[SupportRecord] = []
         drafts: List[SkillDraft] = []
         active_windows = list(windows or [])
         if self.max_units_per_document > 0:
             active_windows = active_windows[: self.max_units_per_document]
-        for window in active_windows:
+        total_windows = len(active_windows)
+        for idx, window in enumerate(active_windows, start=1):
             raw_skills = self._extract_unit_skills(
                 record=record,
                 section_heading=window.section_heading,
@@ -782,6 +903,7 @@ class LLMDocumentSkillExtractor:
                 unit_text=window.text,
                 unit_type="window",
                 unit_metadata=dict(window.metadata or {}),
+                logger=logger,
             )
             for item in raw_skills:
                 support, draft = self._build_support_and_draft(
@@ -811,11 +933,33 @@ class LLMDocumentSkillExtractor:
                     continue
                 supports.append(support)
                 drafts.append(draft)
+            emit_stage_progress(
+                stage_progress_callback,
+                {
+                    "stage": "extract",
+                    "kind": "window_progress",
+                    "doc_id": str(record.doc_id or "").strip(),
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "completed_windows": idx,
+                    "total_windows": total_windows,
+                    "total_support_records": len(supports),
+                    "total_skill_drafts": len(drafts),
+                    "window_id": str(window.window_id or "").strip(),
+                    "section_heading": str(window.section_heading or "").strip(),
+                },
+            )
         deduped_supports = {support.support_id: support for support in supports}
         deduped_drafts = {draft.draft_id: draft for draft in drafts}
         return list(deduped_supports.values()), list(deduped_drafts.values())
 
-    def _extract_from_document(self, record: DocumentRecord) -> Tuple[List[SupportRecord], List[SkillDraft]]:
+    def _extract_from_document(
+        self,
+        record: DocumentRecord,
+        *,
+        logger: StageLogger = None,
+        stage_progress_callback: StageProgressCallback = None,
+    ) -> Tuple[List[SupportRecord], List[SkillDraft]]:
         supports: List[SupportRecord] = []
         drafts: List[SkillDraft] = []
         units_seen = 0
@@ -823,6 +967,7 @@ class LLMDocumentSkillExtractor:
             record,
             max_units_per_document=self.max_units_per_document,
         )
+        planned_units: List[Tuple[object, str, TextSpan, str]] = []
         for section in ordered_sections:
             section_text = str(section.text or "").strip()
             if not section_text:
@@ -839,33 +984,114 @@ class LLMDocumentSkillExtractor:
                 if self.max_units_per_document > 0 and units_seen >= self.max_units_per_document:
                     break
                 units_seen += 1
-                raw_skills = self._extract_unit_skills(
+                planned_units.append((section, unit_text, span, unit_type))
+            if self.max_units_per_document > 0 and units_seen >= self.max_units_per_document:
+                break
+
+        total_units = len(planned_units)
+        for idx, (section, unit_text, span, unit_type) in enumerate(planned_units, start=1):
+            raw_skills = self._extract_unit_skills(
+                record=record,
+                section_heading=section.heading,
+                section_level=section.level,
+                span=span,
+                unit_text=unit_text,
+                unit_type=unit_type,
+                logger=logger,
+            )
+            for item in raw_skills:
+                support, draft = self._build_support_and_draft(
                     record=record,
                     section_heading=section.heading,
-                    section_level=section.level,
                     span=span,
                     unit_text=unit_text,
                     unit_type=unit_type,
+                    item=item,
                 )
-                for item in raw_skills:
-                    support, draft = self._build_support_and_draft(
-                        record=record,
-                        section_heading=section.heading,
-                        span=span,
-                        unit_text=unit_text,
-                        unit_type=unit_type,
-                        item=item,
-                    )
-                    if support is None or draft is None:
-                        continue
-                    supports.append(support)
-                    drafts.append(draft)
-            if self.max_units_per_document > 0 and units_seen >= self.max_units_per_document:
-                break
+                if support is None or draft is None:
+                    continue
+                supports.append(support)
+                drafts.append(draft)
+            emit_stage_progress(
+                stage_progress_callback,
+                {
+                    "stage": "extract",
+                    "kind": "window_progress",
+                    "doc_id": str(record.doc_id or "").strip(),
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "completed_windows": idx,
+                    "total_windows": total_units,
+                    "total_support_records": len(supports),
+                    "total_skill_drafts": len(drafts),
+                    "window_id": "",
+                    "section_heading": str(section.heading or "").strip(),
+                },
+            )
 
         deduped_supports = {support.support_id: support for support in supports}
         deduped_drafts = {draft.draft_id: draft for draft in drafts}
         return list(deduped_supports.values()), list(deduped_drafts.values())
+
+    def _extract_document(
+        self,
+        *,
+        record: DocumentRecord,
+        doc_windows: List[StrictWindow],
+        logger: StageLogger = None,
+        stage_progress_callback: StageProgressCallback = None,
+    ) -> Tuple[List[SupportRecord], List[SkillDraft]]:
+        """Extracts one document using one extractor instance."""
+
+        if doc_windows:
+            return self._extract_from_windows(
+                record=record,
+                windows=doc_windows,
+                logger=logger,
+                stage_progress_callback=stage_progress_callback,
+            )
+        return self._extract_from_document(
+            record,
+            logger=logger,
+            stage_progress_callback=stage_progress_callback,
+        )
+
+    def _extract_document_with_retries(
+        self,
+        *,
+        record: DocumentRecord,
+        doc_windows: List[StrictWindow],
+        logger: StageLogger = None,
+        stage_progress_callback: StageProgressCallback = None,
+    ) -> Tuple[List[SupportRecord], List[SkillDraft]]:
+        """Retries one document extraction when provider overload causes transient failures."""
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(max(0, self.extract_retries) + 1):
+            try:
+                return self._extract_document(
+                    record=record,
+                    doc_windows=doc_windows,
+                    logger=logger,
+                    stage_progress_callback=stage_progress_callback,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self.extract_retries or not _is_retryable_extract_error(exc):
+                    raise
+                delay = _retry_backoff_seconds(attempt=attempt, base_delay_s=self.extract_retry_backoff_s)
+                emit_stage_log(
+                    logger,
+                    (
+                        f"[extract_skills] retry document doc={record.doc_id} "
+                        f"attempt={attempt + 1}/{self.extract_retries + 1} delay_s={delay:.2f} error={exc}"
+                    ),
+                )
+                if delay > 0.0:
+                    time.sleep(delay)
+        if last_exc is not None:
+            raise last_exc
+        return [], []
 
     def extract(
         self,
@@ -874,6 +1100,7 @@ class LLMDocumentSkillExtractor:
         windows: Optional[List[StrictWindow]],
         logger: StageLogger,
         progress_callback: ExtractionProgressCallback = None,
+        stage_progress_callback: StageProgressCallback = None,
         accumulate_result: bool = True,
     ) -> SkillExtractionResult:
         result = SkillExtractionResult(
@@ -886,29 +1113,151 @@ class LLMDocumentSkillExtractor:
             doc_id = str(window.doc_id or "").strip()
             if doc_id:
                 windows_by_doc.setdefault(doc_id, []).append(window)
-        for record in documents or []:
-            try:
-                doc_windows = list(windows_by_doc.get(str(record.doc_id or "").strip(), []))
+
+        def _commit_success(record: DocumentRecord, doc_windows: List[StrictWindow], supports: List[SupportRecord], drafts: List[SkillDraft]) -> None:
+            if accumulate_result:
+                result.support_records.extend(supports)
+                result.skill_drafts.extend(drafts)
+            if progress_callback is not None:
+                progress_callback(record, list(supports or []), list(drafts or []), result)
+            emit_stage_progress(
+                stage_progress_callback,
+                {
+                    "stage": "extract",
+                    "kind": "document_done",
+                    "doc_id": str(record.doc_id or "").strip(),
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "total_windows": len(doc_windows),
+                    "supports": len(supports),
+                    "drafts": len(drafts),
+                    "total_support_records": len(list(result.support_records or [])),
+                    "total_skill_drafts": len(list(result.skill_drafts or [])),
+                    "errors": len(list(result.errors or [])),
+                },
+            )
+            emit_stage_log(
+                logger,
+                f"[extract_skills] done {document_progress_label(doc_id=record.doc_id, title=record.title, source_file=str((record.metadata or {}).get('source_file') or ''))} windows={len(doc_windows)} supports={len(supports)} drafts={len(drafts)} names={summarize_names([draft.name for draft in drafts])}",
+            )
+
+        def _commit_error(record: DocumentRecord, error: Exception) -> None:
+            result.errors.append(
+                {
+                    "doc_id": record.doc_id,
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "error": str(error),
+                    "retryable": bool(_is_retryable_extract_error(error)),
+                    "stage": "extract",
+                }
+            )
+            emit_stage_log(logger, f"[extract_skills] error doc={record.doc_id}: {error}")
+
+        doc_items = [
+            (
+                idx,
+                record,
+                list(windows_by_doc.get(str(record.doc_id or "").strip(), [])),
+            )
+            for idx, record in enumerate(list(documents or []))
+        ]
+        total_documents = len(doc_items)
+        if self.extract_workers <= 1 or len(doc_items) <= 1:
+            for idx, record, doc_windows in doc_items:
+                emit_stage_progress(
+                    stage_progress_callback,
+                    {
+                        "stage": "extract",
+                        "kind": "document_start",
+                        "document_index": idx + 1,
+                        "total_documents": total_documents,
+                        "doc_id": str(record.doc_id or "").strip(),
+                        "title": str(record.title or "").strip(),
+                        "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                        "total_windows": len(doc_windows),
+                    },
+                )
                 emit_stage_log(
                     logger,
                     f"[extract_skills] start {document_progress_label(doc_id=record.doc_id, title=record.title, source_file=str((record.metadata or {}).get('source_file') or ''))}",
                 )
-                if doc_windows:
-                    supports, drafts = self._extract_from_windows(record=record, windows=doc_windows)
-                else:
-                    supports, drafts = self._extract_from_document(record)
-                if accumulate_result:
-                    result.support_records.extend(supports)
-                    result.skill_drafts.extend(drafts)
-                if progress_callback is not None:
-                    progress_callback(record, list(supports or []), list(drafts or []), result)
-                emit_stage_log(
-                    logger,
-                    f"[extract_skills] done {document_progress_label(doc_id=record.doc_id, title=record.title, source_file=str((record.metadata or {}).get('source_file') or ''))} windows={len(doc_windows)} supports={len(supports)} drafts={len(drafts)} names={summarize_names([draft.name for draft in drafts])}",
-                )
-            except Exception as e:
-                result.errors.append({"doc_id": record.doc_id, "error": str(e)})
-                emit_stage_log(logger, f"[extract_skills] error doc={record.doc_id}: {e}")
+                try:
+                    supports, drafts = self._extract_document_with_retries(
+                        record=record,
+                        doc_windows=doc_windows,
+                        logger=logger,
+                        stage_progress_callback=stage_progress_callback,
+                    )
+                    _commit_success(record, doc_windows, supports, drafts)
+                except Exception as e:
+                    _commit_error(record, e)
+            return result
+
+        for idx, record, doc_windows in doc_items:
+            emit_stage_progress(
+                stage_progress_callback,
+                {
+                    "stage": "extract",
+                    "kind": "document_start",
+                    "document_index": idx + 1,
+                    "total_documents": total_documents,
+                    "doc_id": str(record.doc_id or "").strip(),
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "total_windows": len(doc_windows),
+                },
+            )
+            emit_stage_log(
+                logger,
+                f"[extract_skills] start {document_progress_label(doc_id=record.doc_id, title=record.title, source_file=str((record.metadata or {}).get('source_file') or ''))}",
+            )
+
+        max_workers = max(1, min(int(self.extract_workers or 1), len(doc_items)))
+        completed: Dict[int, Tuple[str, DocumentRecord, List[StrictWindow], object]] = {}
+        next_idx = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(
+                    self._spawn_worker_extractor()._extract_document_with_retries,
+                    record=record,
+                    doc_windows=doc_windows,
+                    logger=logger,
+                    stage_progress_callback=stage_progress_callback,
+                ): (idx, record, doc_windows)
+                for idx, record, doc_windows in doc_items
+            }
+            for future in as_completed(future_map):
+                idx, record, doc_windows = future_map[future]
+                try:
+                    completed[idx] = ("ok", record, doc_windows, future.result())
+                except Exception as exc:
+                    completed[idx] = ("error", record, doc_windows, exc)
+                while next_idx in completed:
+                    status, record_ready, doc_windows_ready, payload = completed.pop(next_idx)
+                    if status == "ok":
+                        supports_ready, drafts_ready = payload  # type: ignore[misc]
+                        _commit_success(record_ready, doc_windows_ready, list(supports_ready or []), list(drafts_ready or []))
+                    else:
+                        error_obj = payload  # type: ignore[assignment]
+                        if isinstance(error_obj, Exception) and _is_retryable_extract_error(error_obj):
+                            try:
+                                emit_stage_log(
+                                    logger,
+                                    f"[extract_skills] fallback sequential retry doc={record_ready.doc_id} error={error_obj}",
+                                )
+                                supports_ready, drafts_ready = self._extract_document_with_retries(
+                                    record=record_ready,
+                                    doc_windows=doc_windows_ready,
+                                    logger=logger,
+                                    stage_progress_callback=stage_progress_callback,
+                                )
+                                _commit_success(record_ready, doc_windows_ready, list(supports_ready or []), list(drafts_ready or []))
+                            except Exception as fallback_exc:
+                                _commit_error(record_ready, fallback_exc)
+                        else:
+                            _commit_error(record_ready, error_obj)  # type: ignore[arg-type]
+                    next_idx += 1
         return result
 
 
@@ -924,6 +1273,9 @@ def build_document_skill_extractor(
     overlap_chars: int = _DEFAULT_CHUNK_OVERLAP_CHARS,
     max_candidates_per_unit: int = _DEFAULT_MAX_CANDIDATES_PER_UNIT,
     max_units_per_document: int = 0,
+    extract_workers: int = 1,
+    extract_retries: int = _DEFAULT_EXTRACT_RETRIES,
+    extract_retry_backoff_s: float = _DEFAULT_EXTRACT_RETRY_BACKOFF_S,
     domain_type: str = "",
     skill_taxonomy_path: str = "",
     taxonomy: Optional[SkillTaxonomy] = None,
@@ -939,6 +1291,9 @@ def build_document_skill_extractor(
             overlap_chars=overlap_chars,
             max_candidates_per_unit=max_candidates_per_unit,
             max_units_per_document=max_units_per_document,
+            extract_workers=extract_workers,
+            extract_retries=extract_retries,
+            extract_retry_backoff_s=extract_retry_backoff_s,
             domain_type=domain_type,
             skill_taxonomy_path=skill_taxonomy_path,
             taxonomy=taxonomy,
@@ -953,6 +1308,7 @@ def extract_skills(
     extractor: DocumentSkillExtractor | None = None,
     logger: StageLogger = None,
     progress_callback: ExtractionProgressCallback = None,
+    stage_progress_callback: StageProgressCallback = None,
     accumulate_result: bool = True,
 ) -> SkillExtractionResult:
     """Public functional wrapper for the direct skill extraction stage."""
@@ -963,5 +1319,6 @@ def extract_skills(
         windows=list(windows or []),
         logger=logger,
         progress_callback=progress_callback,
+        stage_progress_callback=stage_progress_callback,
         accumulate_result=accumulate_result,
     )
