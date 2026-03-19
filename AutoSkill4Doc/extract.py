@@ -34,8 +34,10 @@ from .core.common import StageLogger, compact_metadata, document_progress_label
 from .core.config import (
     DEFAULT_DOC_SKILL_USER_ID,
     DEFAULT_EXTRACT_STRATEGY,
+    DEFAULT_MAX_CANDIDATES_PER_UNIT,
     DEFAULT_MAX_SECTION_CHARS,
     DEFAULT_RETRIEVAL_SCORE_THRESHOLD,
+    DEFAULT_SECTION_OUTLINE_MODE,
     SUPPORTED_EXTRACT_STRATEGIES,
     SUPPORTED_SECTION_OUTLINE_MODES,
     default_store_path,
@@ -335,14 +337,14 @@ def extract_from_doc(
     target_state: Optional[VersionState] = None,
     logger: StageLogger = None,
     max_documents: int = 0,
-    max_candidates_per_unit: int = 3,
+    max_candidates_per_unit: int = DEFAULT_MAX_CANDIDATES_PER_UNIT,
     max_units_per_document: int = 0,
     extract_workers: int = 1,
     extract_retries: int = 3,
     extract_retry_backoff_s: float = 1.0,
     retrieval_score_threshold: float = DEFAULT_RETRIEVAL_SCORE_THRESHOLD,
     max_section_chars: int = DEFAULT_MAX_SECTION_CHARS,
-    section_outline_mode: str = "auto",
+    section_outline_mode: str = DEFAULT_SECTION_OUTLINE_MODE,
     family_name: str = "",
     profile_id: str = "",
     taxonomy_axis: str = "",
@@ -406,7 +408,7 @@ def extract_from_doc(
             llm_config=dict(llm_cfg),
             max_section_chars=int(max_chars_per_chunk or 0) or 6000,
             overlap_chars=int(overlap_chars or 0),
-            max_candidates_per_unit=int(max_candidates_per_unit or 0) or 3,
+            max_candidates_per_unit=int(max_candidates_per_unit or 0) or DEFAULT_MAX_CANDIDATES_PER_UNIT,
             max_units_per_document=int(max_units_per_document or 0),
             extract_workers=max(1, int(extract_workers or 1)),
             extract_retries=max(0, int(extract_retries or 0)),
@@ -661,14 +663,16 @@ def _build_pipeline_from_args(
         document_ingestor=HeuristicDocumentIngestor(
             llm_config=dict(getattr(getattr(sdk, "config", None), "llm", {}) or {}),
             max_section_chars=int(getattr(args, "max_section_chars", 0) or 0) or DEFAULT_MAX_SECTION_CHARS,
-            outline_fallback_mode=normalize_section_outline_mode(str(getattr(args, "section_outline_mode", "") or "auto")),
+            outline_fallback_mode=normalize_section_outline_mode(
+                str(getattr(args, "section_outline_mode", "") or DEFAULT_SECTION_OUTLINE_MODE)
+            ),
         ),
         document_skill_extractor=build_document_skill_extractor(
             "llm",
             llm_config=dict(getattr(getattr(sdk, "config", None), "llm", {}) or {}),
             max_section_chars=int(args.max_chars_per_chunk or 0) or 6000,
             overlap_chars=int(args.overlap_chars or 0),
-            max_candidates_per_unit=int(args.max_candidates_per_unit or 0) or 3,
+            max_candidates_per_unit=int(args.max_candidates_per_unit or 0) or DEFAULT_MAX_CANDIDATES_PER_UNIT,
             max_units_per_document=int(args.max_units_per_document or 0),
             extract_workers=max(1, int(getattr(args, "extract_workers", 1) or 1)),
             extract_retries=max(0, int(getattr(args, "extract_retries", 3) or 0)),
@@ -852,9 +856,9 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--section-outline-mode",
-        default="auto",
+        default=DEFAULT_SECTION_OUTLINE_MODE,
         choices=list(SUPPORTED_SECTION_OUTLINE_MODES),
-        help="How to recover section/subsection hierarchy when rule-based heading detection fails. `auto` allows one outline LLM pass per document; `off` disables it.",
+        help="How to determine section/subsection hierarchy. `llm` is the default and runs one outline LLM pass per document over rule-recalled heading candidates; `rule` disables the LLM pass. `auto/off` are compatibility aliases.",
     )
 
     parser.add_argument(
@@ -875,8 +879,8 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         "--max-candidates-per-unit",
         "--max-candidates-per-window",
         type=int,
-        default=3,
-        help="Maximum skill candidates requested from the model for each extraction window/unit.",
+        default=DEFAULT_MAX_CANDIDATES_PER_UNIT,
+        help="Maximum planned skills expanded for each extraction window/unit.",
     )
     parser.add_argument(
         "--max-units-per-document",

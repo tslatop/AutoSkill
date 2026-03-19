@@ -68,6 +68,39 @@ def pick_default_provider() -> str:
     return "mock"
 
 
+def normalize_provider_name(provider: str) -> str:
+    """Normalizes one provider identifier for runtime checks."""
+
+    return str(provider or "").strip().lower()
+
+
+def allow_mock_provider(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Returns whether mock is explicitly allowed for dev/test use."""
+
+    cfg = dict(config or {})
+    return bool(cfg.get("allow_mock")) or env_bool("AUTOSKILL_ALLOW_MOCK_PROVIDER", False)
+
+
+def ensure_runtime_llm_provider(
+    provider: str,
+    *,
+    context: str,
+    allow_mock: bool = False,
+) -> str:
+    """Ensures user-facing extraction paths do not silently run with mock."""
+
+    resolved = normalize_provider_name(provider) or pick_default_provider()
+    if resolved != "mock" or allow_mock:
+        return resolved
+    raise SystemExit(
+        f"{context} requires a real LLM provider. "
+        "Set --llm-provider explicitly or configure one of DASHSCOPE_API_KEY, "
+        "ZHIPUAI_API_KEY/BIGMODEL_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, "
+        "INTERNLM_API_KEY, or AUTOSKILL_GENERIC_LLM_URL. "
+        "Mock is reserved for development/testing only."
+    )
+
+
 def _require_key(env_name: str) -> str:
     """Reads one required API key from the environment."""
 

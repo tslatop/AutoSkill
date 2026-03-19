@@ -26,6 +26,7 @@ from ..core.common import (
     normalize_text,
     summarize_names,
 )
+from ..core.config import DEFAULT_MAX_CANDIDATES_PER_UNIT
 from ..core.llm_utils import (
     clip_confidence,
     coerce_str_list,
@@ -48,7 +49,6 @@ from ..taxonomy import SkillTaxonomy, load_skill_taxonomy
 _WORKFLOW_PATTERNS = [r"^\s*[\-\*\u2022]\s+", r"^\s*\d+[\.\)]\s+"]
 _DEFAULT_SECTION_CHARS = 2400
 _DEFAULT_CHUNK_OVERLAP_CHARS = 200
-_DEFAULT_MAX_CANDIDATES_PER_UNIT = 3
 _DEFAULT_EXTRACT_RETRIES = 3
 _DEFAULT_EXTRACT_RETRY_BACKOFF_S = 1.0
 _DEFAULT_SECTION_PRIORITY_TERMS = (
@@ -561,6 +561,58 @@ def _draft_identity_seed(*, doc_id: str, section: str, name: str, prompt: str, u
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"autoskill-document-draft:{normalized}"))
 
 
+def _planned_skill_key(item: Dict[str, object]) -> str:
+    """Builds a stable dedupe key for one planned/extracted skill item."""
+
+    return "|".join(
+        [
+            normalize_text(str(item.get("name") or ""), lower=True),
+            normalize_text(str(item.get("asset_type") or ""), lower=True),
+            normalize_text(str(item.get("asset_node_id") or ""), lower=True),
+            normalize_text(str(item.get("granularity") or ""), lower=True),
+            normalize_text(str(item.get("objective") or ""), lower=True),
+        ]
+    )
+
+
+def _skill_item_richness(item: Dict[str, object]) -> int:
+    """Scores how complete one extracted skill payload looks."""
+
+    score = 0
+    for key in (
+        "description",
+        "prompt",
+        "objective",
+        "task_family",
+        "method_family",
+        "stage",
+        "asset_type",
+        "asset_node_id",
+    ):
+        if str(item.get(key) or "").strip():
+            score += 2
+    for key in (
+        "workflow_steps",
+        "constraints",
+        "cautions",
+        "output_contract",
+        "triggers",
+        "tags",
+        "intervention_moves",
+        "applicable_signals",
+        "contraindications",
+        "examples",
+    ):
+        value = item.get(key)
+        if isinstance(value, list) and value:
+            score += min(3, len(value))
+    if item.get("resources"):
+        score += 1
+    if item.get("files"):
+        score += 1
+    return score
+
+
 @dataclass
 class SkillExtractionResult:
     """Output of the direct skill extraction stage."""
@@ -604,7 +656,7 @@ class LLMDocumentSkillExtractor:
         llm_config: Optional[Dict[str, object]] = None,
         max_section_chars: int = _DEFAULT_SECTION_CHARS,
         overlap_chars: int = _DEFAULT_CHUNK_OVERLAP_CHARS,
-        max_candidates_per_unit: int = _DEFAULT_MAX_CANDIDATES_PER_UNIT,
+        max_candidates_per_unit: int = DEFAULT_MAX_CANDIDATES_PER_UNIT,
         max_units_per_document: int = 0,
         extract_workers: int = 1,
         extract_retries: int = _DEFAULT_EXTRACT_RETRIES,
@@ -617,7 +669,7 @@ class LLMDocumentSkillExtractor:
         self._llm = llm or build_llm(dict(self._llm_config or {"provider": "mock"}))
         self.max_section_chars = max(200, int(max_section_chars or _DEFAULT_SECTION_CHARS))
         self.overlap_chars = max(0, int(overlap_chars or 0))
-        self.max_candidates_per_unit = max(1, int(max_candidates_per_unit or _DEFAULT_MAX_CANDIDATES_PER_UNIT))
+        self.max_candidates_per_unit = max(1, int(max_candidates_per_unit or DEFAULT_MAX_CANDIDATES_PER_UNIT))
         self.max_units_per_document = max(0, int(max_units_per_document or 0))
         self.extract_workers = max(1, int(extract_workers or 1))
         self.extract_retries = max(0, int(extract_retries or 0))
@@ -655,7 +707,7 @@ class LLMDocumentSkillExtractor:
             taxonomy=self.taxonomy,
         )
 
-    def _extract_unit_skills(
+    def _build_unit_payload(
         self,
         *,
         record: DocumentRecord,
@@ -665,10 +717,9 @@ class LLMDocumentSkillExtractor:
         unit_text: str,
         unit_type: str,
         unit_metadata: Optional[Dict[str, object]] = None,
-        logger: StageLogger = None,
-    ) -> List[Dict[str, object]]:
+    ) -> Dict[str, object]:
         unit_md = dict(unit_metadata or {})
-        payload = {
+        return {
             "document": {
                 "doc_id": record.doc_id,
                 "title": record.title,
@@ -696,23 +747,37 @@ class LLMDocumentSkillExtractor:
             "max_candidates": self.max_candidates_per_unit,
             "taxonomy": self.taxonomy.to_dict(),
         }
+
+    def _complete_extract_json(
+        self,
+        *,
+        payload: Dict[str, object],
+        kind: str,
+        repair_kind: str,
+        max_candidates: int,
+        record: DocumentRecord,
+        section_heading: str,
+        logger: StageLogger = None,
+    ) -> object:
+        """Runs one LLM extraction step with retries and repair."""
+
         system = maybe_offline_prompt(
             channel=OFFLINE_CHANNEL_DOC,
-            kind="extract",
-            max_candidates=self.max_candidates_per_unit,
+            kind=kind,
+            max_candidates=max_candidates,
             taxonomy=self.taxonomy,
         )
         repair_system = maybe_offline_prompt(
             channel=OFFLINE_CHANNEL_DOC,
-            kind="repair",
-            max_candidates=self.max_candidates_per_unit,
+            kind=repair_kind,
+            max_candidates=max_candidates,
             taxonomy=self.taxonomy,
         )
         repaired_payload = (
             f"DATA:\n{json.dumps(payload, ensure_ascii=False)}\n\n"
             f"DRAFT:\n__DRAFT__"
         )
-        parsed = None
+        parsed: object = None
         last_exc: Optional[Exception] = None
         for attempt in range(max(0, self.extract_retries) + 1):
             try:
@@ -733,7 +798,7 @@ class LLMDocumentSkillExtractor:
                 emit_stage_log(
                     logger,
                     (
-                        f"[extract_skills] retry unit doc={record.doc_id} section={section_heading} "
+                        f"[extract_skills] retry {kind} doc={record.doc_id} section={section_heading} "
                         f"attempt={attempt + 1}/{self.extract_retries + 1} delay_s={delay:.2f} error={exc}"
                     ),
                 )
@@ -741,11 +806,146 @@ class LLMDocumentSkillExtractor:
                     time.sleep(delay)
         if last_exc is not None and parsed is None:
             raise last_exc
+        return parsed
+
+    def _plan_unit_skills(
+        self,
+        *,
+        payload: Dict[str, object],
+        record: DocumentRecord,
+        section_heading: str,
+        logger: StageLogger = None,
+    ) -> List[Dict[str, object]]:
+        """Plans how many distinct skills one window should expand into."""
+
+        parsed = self._complete_extract_json(
+            payload=payload,
+            kind="extract_plan",
+            repair_kind="extract_plan_repair",
+            max_candidates=self.max_candidates_per_unit,
+            record=record,
+            section_heading=section_heading,
+            logger=logger,
+        )
         obj = maybe_json_dict(parsed)
         raw_skills = obj.get("skills") if isinstance(obj.get("skills"), list) else parsed
         if not isinstance(raw_skills, list):
             return []
-        return [maybe_json_dict(item) for item in raw_skills if isinstance(item, dict)]
+        out: List[Dict[str, object]] = []
+        for idx, item in enumerate(raw_skills[: self.max_candidates_per_unit], start=1):
+            if not isinstance(item, dict):
+                continue
+            planned = maybe_json_dict(item)
+            if not str(planned.get("name") or "").strip():
+                continue
+            slot_value = planned.get("slot")
+            try:
+                slot = int(slot_value or idx)
+            except Exception:
+                slot = idx
+            planned["slot"] = max(1, slot)
+            out.append(planned)
+        return out
+
+    def _expand_planned_skill(
+        self,
+        *,
+        payload: Dict[str, object],
+        planned_skill: Dict[str, object],
+        record: DocumentRecord,
+        section_heading: str,
+        logger: StageLogger = None,
+    ) -> Dict[str, object]:
+        """Expands one planned skill into a detailed skill payload."""
+
+        expand_payload = dict(payload)
+        expand_payload["candidate"] = dict(planned_skill or {})
+        parsed = self._complete_extract_json(
+            payload=expand_payload,
+            kind="extract_expand",
+            repair_kind="extract_expand_repair",
+            max_candidates=1,
+            record=record,
+            section_heading=section_heading,
+            logger=logger,
+        )
+        obj = maybe_json_dict(parsed)
+        if isinstance(obj.get("skill"), dict):
+            return maybe_json_dict(obj.get("skill"))
+        if obj.get("skill") is None:
+            return {}
+        raw_skills = obj.get("skills")
+        if isinstance(raw_skills, list) and raw_skills:
+            return maybe_json_dict(raw_skills[0])
+        if obj:
+            return obj
+        return {}
+
+    def _dedupe_unit_skills(self, items: List[Dict[str, object]]) -> List[Dict[str, object]]:
+        """Keeps the strongest local skill when planner/expander emit near-duplicates."""
+
+        best_by_key: Dict[str, Dict[str, object]] = {}
+        order: List[str] = []
+        for item in list(items or []):
+            current = maybe_json_dict(item)
+            if not str(current.get("name") or "").strip():
+                continue
+            key = _planned_skill_key(current)
+            if not key:
+                key = str(uuid.uuid4())
+            existing = best_by_key.get(key)
+            if existing is None:
+                best_by_key[key] = current
+                order.append(key)
+                continue
+            if _skill_item_richness(current) > _skill_item_richness(existing):
+                best_by_key[key] = current
+        return [best_by_key[key] for key in order if key in best_by_key]
+
+    def _extract_unit_skills(
+        self,
+        *,
+        record: DocumentRecord,
+        section_heading: str,
+        section_level: int,
+        span: TextSpan,
+        unit_text: str,
+        unit_type: str,
+        unit_metadata: Optional[Dict[str, object]] = None,
+        logger: StageLogger = None,
+    ) -> List[Dict[str, object]]:
+        payload = self._build_unit_payload(
+            record=record,
+            section_heading=section_heading,
+            section_level=section_level,
+            span=span,
+            unit_text=unit_text,
+            unit_type=unit_type,
+            unit_metadata=unit_metadata,
+        )
+        planned = self._plan_unit_skills(
+            payload=payload,
+            record=record,
+            section_heading=section_heading,
+            logger=logger,
+        )
+        if not planned:
+            return []
+        expanded_items: List[Dict[str, object]] = []
+        for planned_skill in planned[: self.max_candidates_per_unit]:
+            expanded = self._expand_planned_skill(
+                payload=payload,
+                planned_skill=planned_skill,
+                record=record,
+                section_heading=section_heading,
+                logger=logger,
+            )
+            merged = dict(planned_skill)
+            merged.update(maybe_json_dict(expanded))
+            if not str(merged.get("name") or "").strip():
+                continue
+            expanded_items.append(merged)
+        return self._dedupe_unit_skills(expanded_items)
 
     def _build_support_and_draft(
         self,
@@ -1271,7 +1471,7 @@ def build_document_skill_extractor(
     llm_config: Optional[Dict[str, object]] = None,
     max_section_chars: int = _DEFAULT_SECTION_CHARS,
     overlap_chars: int = _DEFAULT_CHUNK_OVERLAP_CHARS,
-    max_candidates_per_unit: int = _DEFAULT_MAX_CANDIDATES_PER_UNIT,
+    max_candidates_per_unit: int = DEFAULT_MAX_CANDIDATES_PER_UNIT,
     max_units_per_document: int = 0,
     extract_workers: int = 1,
     extract_retries: int = _DEFAULT_EXTRACT_RETRIES,

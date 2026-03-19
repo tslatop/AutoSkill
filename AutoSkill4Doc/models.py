@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from autoskill.models import SkillExample
 from autoskill.utils.time import now_iso
-from .core.common import refine_asset_shape
+from .core.common import normalize_task_family, refine_asset_shape
 
 T = TypeVar("T", bound="SerializableModel")
 
@@ -738,8 +738,14 @@ class SkillDraft(SerializableModel):
         self.visible_role = str(self.visible_role or "").strip()
         self.objective = str(self.objective or "").strip() or self.description
         self.domain = str(self.domain or "").strip()
-        self.task_family = str(self.task_family or "").strip()
         self.method_family = str(self.method_family or "").strip()
+        self.task_family = normalize_task_family(
+            str(self.task_family or "").strip(),
+            asset_node_id=self.asset_node_id,
+            domain=self.domain,
+            method_family=self.method_family,
+            metadata=self.metadata,
+        )
         self.stage = str(self.stage or "").strip()
         self.applicable_signals = _coerce_str_list(self.applicable_signals)
         self.contraindications = _coerce_str_list(self.contraindications)
@@ -898,8 +904,14 @@ class SkillSpec(SerializableModel):
         self.visible_role = str(self.visible_role or "").strip()
         self.objective = str(self.objective or "").strip() or self.description
         self.domain = str(self.domain or "").strip()
-        self.task_family = str(self.task_family or "").strip()
         self.method_family = str(self.method_family or "").strip()
+        self.task_family = normalize_task_family(
+            str(self.task_family or "").strip(),
+            asset_node_id=self.asset_node_id,
+            domain=self.domain,
+            method_family=self.method_family,
+            metadata=self.metadata,
+        )
         self.stage = str(self.stage or "").strip()
         self.applicable_signals = _coerce_str_list(self.applicable_signals)
         self.contraindications = _coerce_str_list(self.contraindications)

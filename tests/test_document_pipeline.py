@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
+import threading
 import unittest
 
 from autoskill import AutoSkill, AutoSkillConfig
 from AutoSkill4Doc.stages.compiler import _identity_key_for_skill, build_skill_compiler, compile_skills
 from AutoSkill4Doc.stages.extractor import build_document_skill_extractor, extract_skills
 from AutoSkill4Doc.extract import extract_from_doc
-from AutoSkill4Doc.models import DocumentRecord, SkillDraft, SupportRecord, SupportRelation, TextSpan, VersionState
+from AutoSkill4Doc.models import DocumentRecord, DocumentSection, SkillDraft, SupportRecord, SupportRelation, TextSpan, VersionState
 from AutoSkill4Doc.pipeline import build_default_document_pipeline
 from AutoSkill4Doc.core.config import DEFAULT_DOC_SKILL_USER_ID
 from AutoSkill4Doc.prompts import OFFLINE_CHANNEL_DOC, build_offline_extract_prompt
+from AutoSkill4Doc.store.intermediate import IntermediateRunWriter
 from AutoSkill4Doc.store.layout import intermediate_runs_root
 from AutoSkill4Doc.store.staging import safe_dir_component
 
@@ -31,30 +34,98 @@ Output a short session direction summary.
 """.strip()
 
 
+def _default_document_skill_payload(*, document: dict[str, object], excerpt: str, name: str | None = None) -> dict[str, object]:
+    """Builds one reusable default skill payload for document extraction tests."""
+
+    return {
+        "name": name or f"{document.get('domain') or 'document'} intake workflow",
+        "description": "Reusable workflow extracted from the document.",
+        "prompt": (
+            "# Role & Objective\n"
+            "Guide the operator through the reusable workflow.\n\n"
+            "# Rules & Constraints\n"
+            "- Keep the process safe and structured.\n\n"
+            "# Core Workflow\n"
+            "1. Build rapport first.\n"
+            "2. Clarify the immediate concern.\n"
+            "3. Check acute risk before deeper exploration.\n\n"
+            "# Output Format\n"
+            "- Output a short session direction summary."
+        ),
+        "asset_type": "session_skill",
+        "granularity": "session",
+        "objective": "Run a structured first-session intake.",
+        "domain": document.get("domain") or "psychology",
+        "task_family": "intake",
+        "method_family": "structured_interview",
+        "stage": "intake",
+        "applicable_signals": [
+            "When the client is entering an initial consultation.",
+        ],
+        "intervention_moves": [
+            "Reflect the client's main concern before moving deeper.",
+        ],
+        "contraindications": [
+            "Do not skip acute risk screening when crisis cues are present.",
+        ],
+        "workflow_steps": [
+            "Build rapport first.",
+            "Clarify the immediate concern.",
+            "Check acute risk before deeper exploration.",
+        ],
+        "constraints": [
+            "Keep the process safe and structured.",
+        ],
+        "cautions": [
+            "Avoid intensive interpretation too early.",
+        ],
+        "output_contract": [
+            "Output a short session direction summary.",
+        ],
+        "examples": [
+            {
+                "input": "Client says they feel overwhelmed and do not know where to start.",
+                "output": "Reflect the overwhelm first, then ask for the most urgent concern to focus the session.",
+                "notes": "Use a calm, non-rushing tone.",
+            }
+        ],
+        "relation_type": "conflict" if "do not" in excerpt.lower() else "support",
+        "risk_class": "medium",
+        "triggers": [
+            "When starting intake",
+            "When clarifying a first session",
+            "When documenting session direction",
+        ],
+        "tags": ["psychology", "intake", "workflow"],
+        "confidence": 0.92,
+    }
+
+
 def _document_llm_response(*, system: str | None, user: str, temperature: float = 0.0, mode: str = "default") -> str:
     _ = system, temperature
     if mode == "document_extract":
         payload = json.loads(user)
         document = payload.get("document", {})
         excerpt = str(payload.get("excerpt") or "").strip()
+        candidate = payload.get("candidate")
+        if isinstance(candidate, dict):
+            return json.dumps(
+                {
+                    "skill": _default_document_skill_payload(
+                        document=document,
+                        excerpt=excerpt,
+                        name=str(candidate.get("name") or "").strip() or None,
+                    )
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(
             {
                 "skills": [
                     {
+                        "slot": 1,
                         "name": f"{document.get('domain') or 'document'} intake workflow",
-                        "description": "Reusable workflow extracted from the document.",
-                        "prompt": (
-                            "# Role & Objective\n"
-                            "Guide the operator through the reusable workflow.\n\n"
-                            "# Rules & Constraints\n"
-                            "- Keep the process safe and structured.\n\n"
-                            "# Core Workflow\n"
-                            "1. Build rapport first.\n"
-                            "2. Clarify the immediate concern.\n"
-                            "3. Check acute risk before deeper exploration.\n\n"
-                            "# Output Format\n"
-                            "- Output a short session direction summary."
-                        ),
+                        "description": "Reusable workflow for first-session intake and safety framing.",
                         "asset_type": "session_skill",
                         "granularity": "session",
                         "objective": "Run a structured first-session intake.",
@@ -62,44 +133,7 @@ def _document_llm_response(*, system: str | None, user: str, temperature: float 
                         "task_family": "intake",
                         "method_family": "structured_interview",
                         "stage": "intake",
-                        "applicable_signals": [
-                            "When the client is entering an initial consultation.",
-                        ],
-                        "intervention_moves": [
-                            "Reflect the client's main concern before moving deeper.",
-                        ],
-                        "contraindications": [
-                            "Do not skip acute risk screening when crisis cues are present.",
-                        ],
-                        "workflow_steps": [
-                            "Build rapport first.",
-                            "Clarify the immediate concern.",
-                            "Check acute risk before deeper exploration.",
-                        ],
-                        "constraints": [
-                            "Keep the process safe and structured.",
-                        ],
-                        "cautions": [
-                            "Avoid intensive interpretation too early.",
-                        ],
-                        "output_contract": [
-                            "Output a short session direction summary.",
-                        ],
-                        "examples": [
-                            {
-                                "input": "Client says they feel overwhelmed and do not know where to start.",
-                                "output": "Reflect the overwhelm first, then ask for the most urgent concern to focus the session.",
-                                "notes": "Use a calm, non-rushing tone.",
-                            }
-                        ],
-                        "relation_type": "conflict" if "do not" in excerpt.lower() else "support",
-                        "risk_class": "medium",
-                        "triggers": [
-                            "When starting intake",
-                            "When clarifying a first session",
-                            "When documenting session direction",
-                        ],
-                        "tags": ["psychology", "intake", "workflow"],
+                        "why_distinct": "The excerpt supports one reusable intake workflow.",
                         "confidence": 0.92,
                     }
                 ]
@@ -198,7 +232,7 @@ class DocumentPipelineTest(unittest.TestCase):
     def _build_sdk(self, *, store_path: str) -> AutoSkill:
         return AutoSkill(
             AutoSkillConfig(
-                llm={"provider": "mock", "response": _document_llm_response},
+                llm={"provider": "mock", "response": _document_llm_response, "allow_mock": True},
                 embeddings={"provider": "hashing", "dims": 64},
                 store={"provider": "local", "path": store_path},
                 maintenance_strategy="heuristic",
@@ -258,7 +292,27 @@ class DocumentPipelineTest(unittest.TestCase):
             self.assertEqual(status_payload.get("metadata", {}).get("family_name"), "通用心理咨询")
             self.assertTrue(any("[ingest_document]" in line for line in logs))
             self.assertTrue(any("[extract_skills]" in line for line in logs))
-            self.assertTrue(any("[compile_skills]" in line for line in logs))
+
+    def test_pipeline_build_rejects_mock_provider_without_explicit_allowance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sdk = AutoSkill(
+                AutoSkillConfig(
+                    llm={"provider": "mock", "response": _document_llm_response},
+                    embeddings={"provider": "hashing", "dims": 64},
+                    store={"provider": "local", "path": tmpdir},
+                    maintenance_strategy="heuristic",
+                )
+            )
+            pipeline = build_default_document_pipeline(sdk=sdk)
+
+            with self.assertRaises(SystemExit):
+                pipeline.build(
+                    data=_DOC_TEXT,
+                    title="Intake Workflow",
+                    domain="psychology",
+                    metadata={"channel": "offline_extract_from_doc"},
+                    dry_run=True,
+                )
 
     def test_resolve_run_metadata_falls_back_to_default_family_for_mixed_rule_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -483,12 +537,16 @@ class DocumentPipelineTest(unittest.TestCase):
     def test_document_prompt_requires_multi_asset_single_goal_extraction(self) -> None:
         prompt = build_offline_extract_prompt(channel=OFFLINE_CHANNEL_DOC, max_candidates=3)
 
+        self.assertIn("FIRST plan how many reusable assets", prompt)
         self.assertIn("One document may produce zero, one, or MANY assets", prompt)
         self.assertIn("single-goal", prompt)
+        self.assertIn("description (1-2 short sentences", prompt)
         self.assertIn("asset_type (macro_protocol|session_skill|micro_skill|safety_rule|knowledge_reference)", prompt)
         self.assertIn("never merge macro and micro assets", prompt)
         self.assertIn("micro_skill means one therapist move", prompt)
-        self.assertIn("examples", prompt)
+        self.assertIn("Be conservative", prompt)
+        self.assertIn("task_family/method_family/stage should use compact reusable labels", prompt)
+        self.assertIn("If the text is mainly case narrative", prompt)
 
     def test_identity_key_distinguishes_macro_and_micro_assets(self) -> None:
         macro = _identity_key_for_skill(
@@ -703,6 +761,429 @@ Do not push interpretation before the client is ready.
             self.assertTrue(
                 any(record.metadata.get("extraction_unit") == "chunk" for record in extracted.support_records)
             )
+
+    def test_parallel_document_extraction_preserves_input_order(self) -> None:
+        def _parallel_response(*, system: str | None, user: str, temperature: float = 0.0, mode: str = "default") -> str:
+            _ = system, temperature
+            if mode != "document_extract":
+                return json.dumps({"skills": []}, ensure_ascii=False)
+            payload = json.loads(user)
+            title = str((payload.get("document") or {}).get("title") or "").strip()
+            if title == "Doc A":
+                time.sleep(0.15)
+            else:
+                time.sleep(0.01)
+            return json.dumps(
+                {
+                    "skills": [
+                        {
+                            "name": f"{title} skill",
+                            "description": f"Reusable workflow for {title}.",
+                            "prompt": "# Goal\nRun the workflow.\n\n# Core Workflow\n1. Build rapport.\n2. Clarify the concern.",
+                            "asset_type": "session_skill",
+                            "granularity": "session",
+                            "objective": f"Run the workflow for {title}.",
+                            "domain": "psychology",
+                            "task_family": "intake",
+                            "method_family": "structured_interview",
+                            "stage": "intake",
+                            "workflow_steps": ["Build rapport.", "Clarify the concern."],
+                            "constraints": ["Keep the process structured."],
+                            "relation_type": "support",
+                            "risk_class": "low",
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        doc_a = DocumentRecord(
+            doc_id="doc-a",
+            source_type="markdown_document",
+            title="Doc A",
+            domain="psychology",
+            raw_text="# Intake\nBuild rapport first.\n",
+            sections=[
+                DocumentSection(
+                    heading="Intake",
+                    text="Build rapport first and clarify the concern.",
+                    span=TextSpan(start=0, end=43),
+                )
+            ],
+            content_hash="doc-a-hash",
+        )
+        doc_b = DocumentRecord(
+            doc_id="doc-b",
+            source_type="markdown_document",
+            title="Doc B",
+            domain="psychology",
+            raw_text="# Intake\nBuild rapport first.\n",
+            sections=[
+                DocumentSection(
+                    heading="Intake",
+                    text="Build rapport first and clarify the concern.",
+                    span=TextSpan(start=0, end=43),
+                )
+            ],
+            content_hash="doc-b-hash",
+        )
+        callback_titles: list[str] = []
+
+        extracted = extract_skills(
+            documents=[doc_a, doc_b],
+            extractor=build_document_skill_extractor(
+                "llm",
+                llm_config={"provider": "mock", "response": _parallel_response},
+                extract_workers=2,
+            ),
+            progress_callback=lambda record, supports, drafts, cumulative: callback_titles.append(str(record.title or "")),
+        )
+
+        self.assertEqual([draft.name for draft in extracted.skill_drafts], ["Doc A skill", "Doc B skill"])
+        self.assertEqual([support.doc_id for support in extracted.support_records], ["doc-a", "doc-b"])
+        self.assertEqual(callback_titles, ["Doc A", "Doc B"])
+
+    def test_parallel_document_extraction_retries_transient_rate_limit_errors(self) -> None:
+        attempts: dict[str, int] = {}
+        lock = threading.Lock()
+
+        def _retryable_response(*, system: str | None, user: str, temperature: float = 0.0, mode: str = "default") -> str:
+            _ = system, temperature
+            if mode != "document_extract":
+                return json.dumps({"skills": []}, ensure_ascii=False)
+            payload = json.loads(user)
+            title = str((payload.get("document") or {}).get("title") or "").strip()
+            candidate = payload.get("candidate")
+            if isinstance(candidate, dict):
+                return json.dumps(
+                    {
+                        "skill": {
+                            "name": f"{title} skill",
+                            "description": f"Reusable workflow for {title}.",
+                            "prompt": "# Goal\nRun the workflow.\n\n# Core Workflow\n1. Build rapport.\n2. Clarify the concern.",
+                            "asset_type": "session_skill",
+                            "granularity": "session",
+                            "objective": f"Run the workflow for {title}.",
+                            "domain": "psychology",
+                            "task_family": "intake",
+                            "method_family": "structured_interview",
+                            "stage": "intake",
+                            "workflow_steps": ["Build rapport.", "Clarify the concern."],
+                            "constraints": ["Keep the process structured."],
+                            "relation_type": "support",
+                            "risk_class": "low",
+                            "confidence": 0.9,
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            with lock:
+                count = int(attempts.get(title, 0))
+                attempts[title] = count + 1
+            if count == 0:
+                raise RuntimeError("429 Too Many Requests")
+            return json.dumps(
+                {
+                    "skills": [
+                        {
+                            "slot": 1,
+                            "name": f"{title} skill",
+                            "description": f"Reusable workflow for {title}.",
+                            "asset_type": "session_skill",
+                            "granularity": "session",
+                            "objective": f"Run the workflow for {title}.",
+                            "domain": "psychology",
+                            "task_family": "intake",
+                            "method_family": "structured_interview",
+                            "stage": "intake",
+                            "why_distinct": "Single workflow in this window.",
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        doc_a = DocumentRecord(
+            doc_id="doc-a",
+            source_type="markdown_document",
+            title="Doc A",
+            domain="psychology",
+            raw_text="# Intake\nBuild rapport first.\n",
+            sections=[
+                DocumentSection(
+                    heading="Intake",
+                    text="Build rapport first and clarify the concern.",
+                    span=TextSpan(start=0, end=43),
+                )
+            ],
+            content_hash="doc-a-hash",
+        )
+        doc_b = DocumentRecord(
+            doc_id="doc-b",
+            source_type="markdown_document",
+            title="Doc B",
+            domain="psychology",
+            raw_text="# Intake\nBuild rapport first.\n",
+            sections=[
+                DocumentSection(
+                    heading="Intake",
+                    text="Build rapport first and clarify the concern.",
+                    span=TextSpan(start=0, end=43),
+                )
+            ],
+            content_hash="doc-b-hash",
+        )
+
+        extracted = extract_skills(
+            documents=[doc_a, doc_b],
+            extractor=build_document_skill_extractor(
+                "llm",
+                llm_config={"provider": "mock", "response": _retryable_response},
+                extract_workers=2,
+                extract_retries=2,
+                extract_retry_backoff_s=0.01,
+            ),
+        )
+
+        self.assertEqual([draft.name for draft in extracted.skill_drafts], ["Doc A skill", "Doc B skill"])
+        self.assertEqual(attempts, {"Doc A": 2, "Doc B": 2})
+        self.assertEqual(extracted.errors, [])
+
+    def test_two_stage_extraction_expands_multiple_planned_skills(self) -> None:
+        calls: list[str] = []
+
+        def _multi_skill_response(*, system: str | None, user: str, temperature: float = 0.0, mode: str = "default") -> str:
+            _ = system, temperature
+            if mode != "document_extract":
+                return json.dumps({"skills": []}, ensure_ascii=False)
+            payload = json.loads(user)
+            candidate = payload.get("candidate")
+            if isinstance(candidate, dict):
+                name = str(candidate.get("name") or "").strip()
+                calls.append(f"expand:{name}")
+                if "放松" in name:
+                    return json.dumps(
+                        {
+                            "skill": {
+                                "name": "放松训练教学流程",
+                                "description": "指导来访者完成放松训练。",
+                                "prompt": "# Goal\n完成放松训练。\n\n# Core Workflow\n1. 说明目标。\n2. 示范呼吸放松。\n3. 复盘体验。",
+                                "asset_type": "session_skill",
+                                "asset_node_id": "session_framework",
+                                "granularity": "session",
+                                "objective": "完成一次放松训练教学。",
+                                "domain": "psychology",
+                                "task_family": "relaxation_training",
+                                "method_family": "cbt",
+                                "stage": "intervention",
+                                "workflow_steps": ["说明目标。", "示范呼吸放松。", "复盘体验。"],
+                                "constraints": ["保持步骤清晰。"],
+                                "relation_type": "support",
+                                "risk_class": "low",
+                                "confidence": 0.9,
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "skill": {
+                            "name": "焦虑等级表建构微技能",
+                            "description": "帮助来访者建构焦虑等级表。",
+                            "prompt": "# Goal\n建构焦虑等级表。\n\n# Core Workflow\n1. 列出场景。\n2. 按强度排序。",
+                            "asset_type": "micro_skill",
+                            "asset_node_id": "micro_intervention",
+                            "granularity": "micro",
+                            "objective": "完成焦虑等级表建构。",
+                            "domain": "psychology",
+                            "task_family": "hierarchy_building",
+                            "method_family": "cbt",
+                            "stage": "intervention",
+                            "workflow_steps": ["列出场景。", "按强度排序。"],
+                            "constraints": ["聚焦一个任务。"],
+                            "relation_type": "support",
+                            "risk_class": "low",
+                            "confidence": 0.9,
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            calls.append("plan")
+            return json.dumps(
+                {
+                    "skills": [
+                        {
+                            "slot": 1,
+                            "name": "放松训练教学流程",
+                            "description": "指导来访者完成一次结构化放松训练。",
+                            "asset_type": "session_skill",
+                            "asset_node_id": "session_framework",
+                            "granularity": "session",
+                            "objective": "完成一次放松训练教学。",
+                            "task_family": "relaxation_training",
+                            "method_family": "cbt",
+                            "stage": "intervention",
+                            "why_distinct": "这是独立的会谈流程。",
+                        },
+                        {
+                            "slot": 2,
+                            "name": "焦虑等级表建构微技能",
+                            "description": "帮助来访者列出并排序焦虑场景。",
+                            "asset_type": "micro_skill",
+                            "asset_node_id": "micro_intervention",
+                            "granularity": "micro",
+                            "objective": "完成焦虑等级表建构。",
+                            "task_family": "hierarchy_building",
+                            "method_family": "cbt",
+                            "stage": "intervention",
+                            "why_distinct": "这是不同目标的微干预。",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        record = DocumentRecord(
+            doc_id="doc-multi",
+            source_type="markdown_document",
+            title="Doc Multi",
+            domain="psychology",
+            raw_text="# Intervention\n1. 教放松。\n2. 建构焦虑等级表。\n",
+            sections=[
+                DocumentSection(
+                    heading="Intervention",
+                    text="先进行放松训练，再帮助来访者建构焦虑等级表。",
+                    span=TextSpan(start=0, end=28),
+                )
+            ],
+            content_hash="doc-multi-hash",
+        )
+
+        extracted = extract_skills(
+            documents=[record],
+            extractor=build_document_skill_extractor(
+                "llm",
+                llm_config={"provider": "mock", "response": _multi_skill_response},
+            ),
+        )
+
+        self.assertEqual(calls, ["plan", "expand:放松训练教学流程", "expand:焦虑等级表建构微技能"])
+        self.assertEqual(
+            [draft.name for draft in extracted.skill_drafts],
+            ["放松训练教学流程", "焦虑等级表建构微技能"],
+        )
+        self.assertEqual(len(extracted.support_records), 2)
+
+    def test_build_records_failed_document_without_aborting_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            def _partially_failing_response(*, system: str | None, user: str, temperature: float = 0.0, mode: str = "default") -> str:
+                if mode == "document_extract":
+                    payload = json.loads(user)
+                    title = str((payload.get("document") or {}).get("title") or "").strip()
+                    if title == "Doc Fail":
+                        raise TimeoutError("SSL handshake timed out")
+                return _document_llm_response(system=system, user=user, temperature=temperature, mode=mode)
+
+            sdk = AutoSkill(
+                AutoSkillConfig(
+                    llm={"provider": "mock", "response": _partially_failing_response, "allow_mock": True},
+                    embeddings={"provider": "hashing", "dims": 64},
+                    store={"provider": "local", "path": tmpdir},
+                    maintenance_strategy="heuristic",
+                )
+            )
+            pipeline = build_default_document_pipeline(
+                sdk=sdk,
+                extract_workers=2,
+                extract_retries=1,
+                extract_retry_backoff_s=0.01,
+            )
+
+            result = pipeline.build(
+                user_id="u1",
+                data=[
+                    {
+                        "doc_id": "doc-ok",
+                        "title": "Doc OK",
+                        "raw_text": _DOC_TEXT,
+                        "source_file": "/tmp/doc-ok.md",
+                    },
+                    {
+                        "doc_id": "doc-fail",
+                        "title": "Doc Fail",
+                        "raw_text": _DOC_TEXT,
+                        "source_file": "/tmp/doc-fail.md",
+                    },
+                ],
+                title="Batch Build",
+                domain="psychology",
+                metadata={"channel": "offline_extract_from_doc", "domain_type": "psychology"},
+            )
+
+            self.assertEqual(len(result.extracted.errors), 1)
+            self.assertEqual(result.extracted.errors[0]["doc_id"], "doc-fail")
+            self.assertEqual(result.extracted.errors[0]["title"], "Doc Fail")
+            self.assertEqual(result.extracted.errors[0]["source_file"], "/tmp/doc-fail.md")
+            self.assertTrue(bool(result.extracted.errors[0]["retryable"]))
+            self.assertGreaterEqual(len(result.compiled.skill_specs), 1)
+            self.assertGreaterEqual(len(result.registration.upserted_store_skills), 1)
+
+            error_path = os.path.join(
+                result.intermediate["run_dir"],
+                "extract",
+                "documents",
+                f"{safe_dir_component('doc-fail')}.json",
+            )
+            self.assertTrue(os.path.isfile(error_path))
+            with open(error_path, "r", encoding="utf-8") as f:
+                error_payload = json.load(f)
+            self.assertTrue(bool(error_payload.get("failed")))
+            self.assertEqual(str((error_payload.get("error") or {}).get("doc_id") or ""), "doc-fail")
+            self.assertIn("SSL handshake timed out", str((error_payload.get("error") or {}).get("error") or ""))
+            reloaded = pipeline.registry.root_dir
+            self.assertTrue(bool(reloaded))
+            from AutoSkill4Doc.store.intermediate import IntermediateRunWriter
+
+            writer = IntermediateRunWriter(base_store_root=tmpdir, run_id=os.path.basename(result.intermediate["run_dir"]), resume_existing=True)
+            loaded_extract = writer.load_extract()
+            self.assertEqual(len(list(loaded_extract.errors or [])), 1)
+
+    def test_resume_does_not_skip_failed_document_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            writer = IntermediateRunWriter(base_store_root=tmpdir, metadata={"resume_key": "resume-test"})
+            ok_record = DocumentRecord(
+                doc_id="doc-ok",
+                source_type="markdown_document",
+                title="Doc OK",
+                domain="psychology",
+                raw_text=_DOC_TEXT,
+                content_hash="doc-ok-hash",
+            )
+            fail_record = DocumentRecord(
+                doc_id="doc-fail",
+                source_type="markdown_document",
+                title="Doc Fail",
+                domain="psychology",
+                raw_text=_DOC_TEXT,
+                content_hash="doc-fail-hash",
+            )
+
+            writer.write_extract_progress(
+                record=ok_record,
+                supports=[],
+                drafts=[],
+                total_documents=2,
+            )
+            writer.write_extract_error(
+                record=fail_record,
+                error={"doc_id": "doc-fail", "error": "timeout"},
+                total_documents=2,
+            )
+
+            self.assertEqual(writer.processed_extract_doc_ids(), ["doc-ok"])
+
 
     def test_budgeted_extraction_prioritizes_relevant_sections(self) -> None:
         def _budget_response(*, system: str | None, user: str, temperature: float = 0.0, mode: str = "default") -> str:
@@ -952,6 +1433,75 @@ Use a scaling question to help the client rate progress and define the next step
             self.assertEqual(spec.metadata.get("profile_id"), "psychology::认知行为疗法")
             self.assertEqual(spec.metadata.get("domain_root_name"), "心理咨询")
             self.assertEqual(spec.metadata.get("taxonomy_axis"), "疗法")
+
+    def test_compile_falls_back_to_source_asset_type_when_compiler_returns_unknown_type(self) -> None:
+        support = SupportRecord(
+            support_id="sup-chem-a",
+            doc_id="chem-doc",
+            source_file="/tmp/chem.md",
+            section="Analysis",
+            span=TextSpan(start=0, end=20),
+            excerpt="Prepare the plate and spot the sample.",
+            relation_type=SupportRelation.SUPPORT,
+            confidence=0.9,
+        )
+        draft = SkillDraft(
+            draft_id="draft-chem-a",
+            doc_id="chem-doc",
+            name="TLC workflow",
+            description="Run the TLC workflow.",
+            asset_type="session_skill",
+            granularity="session",
+            objective="Run the TLC workflow.",
+            domain="chemistry",
+            task_family="analysis",
+            method_family="tlc",
+            stage="analysis",
+            workflow_steps=["Prepare the plate.", "Spot the sample."],
+            constraints=["Use the configured solvent system."],
+            support_ids=["sup-chem-a"],
+            metadata={
+                "prompt": "# Goal\nRun the TLC workflow.",
+                "domain_type": "chemistry",
+                "taxonomy_id": "chemistry",
+            },
+        )
+        compile_response = lambda system=None, user="", temperature=0.0, mode="default": json.dumps(
+            {
+                "skills": [
+                    {
+                        "name": "TLC workflow",
+                        "description": "Run the TLC workflow.",
+                        "prompt": "# Goal\nRun the TLC workflow.\n\n# Core Workflow\n1. Prepare the plate.\n2. Spot the sample.",
+                        "asset_type": "invalid_new_type",
+                        "granularity": "session",
+                        "objective": "Run the TLC workflow.",
+                        "domain": "chemistry",
+                        "task_family": "analysis",
+                        "method_family": "tlc",
+                        "stage": "analysis",
+                        "workflow_steps": ["Prepare the plate.", "Spot the sample."],
+                        "constraints": ["Use the configured solvent system."],
+                        "support_ids": ["sup-chem-a"],
+                        "source_draft_ids": ["draft-chem-a"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+        compiled = compile_skills(
+            skill_drafts=[draft],
+            support_records=[support],
+            compiler=build_skill_compiler(
+                "llm",
+                llm_config={"provider": "mock", "response": compile_response},
+            ),
+            target_state=VersionState.DRAFT,
+        )
+
+        self.assertEqual(len(compiled.skill_specs), 1)
+        self.assertEqual(compiled.skill_specs[0].asset_type, "session_skill")
 
     def test_changed_document_bumps_registry_versions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

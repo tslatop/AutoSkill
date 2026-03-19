@@ -37,7 +37,8 @@ Core layers:
 - in non-`--quiet` CLI runs, the CLI now shows one live single-line multi-stage progress view: extraction reports document and window progress, while later stages report compile-group and register-skill progress
 - transient extraction failures such as rate limits or short-lived overload now retry with exponential backoff instead of dropping the document immediately; tune with `--extract-retries` and `--extract-retry-backoff-s`
 - if one document still fails after retries, AutoSkill4Doc records that failure at the document level and continues the rest of the batch instead of aborting the whole extraction run
-- rules first recall candidate headings; when `section-outline-mode=auto` and an LLM is available, AutoSkill4Doc runs one compact outline-level LLM classification pass per document to assign section/subsection levels
+- extraction now uses a two-stage window flow: first plan how many distinct skills the window really contains, then expand each planned skill one-by-one so multi-skill windows do not force several full skills to share one response budget
+- by default, AutoSkill4Doc uses one compact outline-level LLM classification pass per document over rule-recalled heading candidates to assign section/subsection levels; use `section-outline-mode=rule` only when you explicitly want rules only
 - dry-run and stage-by-stage execution
 - support-backed provenance and change logs
 - lifecycle-aware versioning: `candidate -> draft -> evaluating -> active -> watchlist -> deprecated -> retired`
@@ -156,7 +157,7 @@ single extraction step. It works in two layers:
      - rules first recall candidate heading lines; when an LLM is available, AutoSkill4Doc can do one compact outline LLM pass per document to classify those candidates into section/subsection levels
      - long sections are pre-split before final window planning; default `--max-section-chars` is `10000`
      - bibliography / reference-heavy sections are skipped before extraction
-   - `extract` produces `SupportRecord + SkillDraft`
+   - `extract` first plans how many skills a window contains and then expands each planned skill individually into `SupportRecord + SkillDraft`
    - `compile` turns drafts into `SkillSpec`
   - `register_versions` retrieves top-k similar existing skills with hybrid embedding + BM25 scoring over metadata-rich skill text, then decides create / strengthen / revise / merge / split / unchanged before persisting registry state and lifecycle updates
   - retrieval texts, corpus vectors, and BM25 tokenized docs are persisted under `.runtime/store/document_skill_retrieval.json` and reused on the next run
@@ -337,9 +338,10 @@ Parsing / hierarchy knobs:
 - `--max-section-chars`
   - pre-splits one oversized detected section before final window construction
   - default: `10000`
-- `--section-outline-mode auto|off`
-  - `auto`: when an LLM is available, do one compact outline LLM classification pass over candidate headings for each document; rules only recall candidates and provide fallback
-  - `off`: disable outline LLM classification completely and rely on rules only
+- `--section-outline-mode llm|rule`
+  - `llm`: default; do one compact outline LLM classification pass over candidate headings for each document, while rules only recall candidates and provide fallback
+  - `rule`: disable outline LLM classification completely and rely on rules only
+  - compatibility aliases: `auto -> llm`, `off -> rule`
 
 ## Is The Flow Reasonable
 

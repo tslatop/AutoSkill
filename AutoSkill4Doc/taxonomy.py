@@ -525,6 +525,18 @@ class SkillTaxonomy:
             return self.default_base_type
         return self.alias_map.get(raw, _coerce_base_type(raw))
 
+    def strict_normalize_asset_type(self, value: Any) -> str:
+        """Maps one configured asset label to a stable type, rejecting unknown non-empty values."""
+
+        raw = _normalize_key(value)
+        if not raw:
+            return self.default_base_type
+        if raw in self.alias_map:
+            return self.alias_map[raw]
+        if raw in _STABLE_BASE_TYPES:
+            return raw
+        return ""
+
     def normalize_asset_node_id(self, value: Any) -> str:
         """Maps one node id/alias back to a canonical configured asset node id."""
 
@@ -713,7 +725,7 @@ class SkillTaxonomy:
         """Resolves the visible family name with request and metadata precedence."""
 
         md = dict(metadata or {})
-        candidate = self.resolve_family_candidate(requested=requested, metadata=md)
+        candidate = self.ensure_configured_family_candidate(requested=requested, metadata=md)
         if candidate is not None:
             return str(candidate.get("visible_name") or candidate.get("name") or "").strip()
         for candidate in (
@@ -725,6 +737,29 @@ class SkillTaxonomy:
             if candidate:
                 return candidate
         return ""
+
+    def ensure_configured_family_candidate(self, *, requested: str = "", metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Ensures one explicit family belongs to configured family_candidates when they exist."""
+
+        md = dict(metadata or {})
+        explicit = (
+            str(requested or "").strip()
+            or str(md.get("family_name") or "").strip()
+            or str(md.get("school_name") or "").strip()
+        )
+        candidate = self.resolve_family_candidate(requested=requested, metadata=md)
+        if candidate is not None:
+            return candidate
+        if explicit and self.family_candidates:
+            choices = [
+                str(item.get("visible_name") or item.get("name") or item.get("id") or "").strip()
+                for item in list(self.family_candidates or [])
+                if str(item.get("visible_name") or item.get("name") or item.get("id") or "").strip()
+            ]
+            raise ValueError(
+                f"family_name '{explicit}' is not in configured family_candidates: {', '.join(choices)}"
+            )
+        return None
 
     def resolve_axis_label(self, *, requested: str = "") -> str:
         """Resolves the visible axis label for manifests and tags."""

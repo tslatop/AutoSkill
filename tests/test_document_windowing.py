@@ -176,6 +176,106 @@ class DocumentWindowingTest(unittest.TestCase):
         self.assertIn("3.1 自动思维识别", list(first.metadata.get("subsection_headings") or []))
         self.assertIn("3.2 证据检验", list(first.metadata.get("subsection_headings") or []))
 
+    def test_markdown_numbered_subsections_use_numeric_hierarchy(self) -> None:
+        sections = parse_sections_from_text(
+            """
+# 4 治疗过程
+
+# 4.1关系建立阶段
+本阶段先建立关系并完成初始评估。
+
+# 4.2解释与经验重构阶段
+本阶段围绕核心主题做解释与经验重构。
+""".strip(),
+            default_title="PDT",
+        )
+
+        self.assertEqual(2, len(sections))
+        self.assertEqual(["4 治疗过程", "4.1关系建立阶段"], sections[0].metadata["heading_path"])
+        self.assertEqual("4 治疗过程", sections[0].metadata["parent_heading"])
+        self.assertEqual("4.1", sections[0].metadata["heading_number"])
+        self.assertEqual("markdown_decimal", sections[0].metadata["heading_kind"])
+
+        result = ingest_document(
+            data="""
+# 4 治疗过程
+
+# 4.1关系建立阶段
+本阶段先建立关系并完成初始评估。
+
+# 4.2解释与经验重构阶段
+本阶段围绕核心主题做解释与经验重构。
+""".strip(),
+            title="Markdown Hierarchy",
+            domain="psychology",
+            dry_run=True,
+        )
+
+        self.assertEqual(1, len(result.windows))
+        first = result.windows[0]
+        self.assertEqual("4 治疗过程", first.section_heading)
+        self.assertEqual(["4 治疗过程"], first.metadata["heading_path"])
+        self.assertIn("4.1关系建立阶段", list(first.metadata.get("subsection_headings") or []))
+        self.assertIn("4.2解释与经验重构阶段", list(first.metadata.get("subsection_headings") or []))
+
+    def test_cn_enum_and_paren_subsections_use_neighbor_context(self) -> None:
+        sections = parse_sections_from_text(
+            """
+# 4 治疗过程
+
+一、关系建立
+本部分用于建立治疗关系。
+
+二、解释阶段
+本部分用于解释与重构。
+
+# 4.1 关系建立阶段
+
+（1）初始评估
+先完成初始评估。
+
+（2）建立契约
+再建立基本咨询契约。
+""".strip(),
+            default_title="Mixed Hierarchy",
+        )
+
+        self.assertEqual(["4 治疗过程", "一、关系建立"], sections[0].metadata["heading_path"])
+        self.assertEqual("4 治疗过程", sections[0].metadata["parent_heading"])
+        self.assertEqual(["4 治疗过程", "二、解释阶段"], sections[1].metadata["heading_path"])
+        self.assertEqual(["4 治疗过程", "4.1 关系建立阶段", "（1）初始评估"], sections[2].metadata["heading_path"])
+        self.assertEqual("4.1 关系建立阶段", sections[2].metadata["parent_heading"])
+        self.assertEqual(["4 治疗过程", "4.1 关系建立阶段", "（2）建立契约"], sections[3].metadata["heading_path"])
+
+    def test_same_style_siblings_recover_after_numbered_substeps(self) -> None:
+        sections = parse_sections_from_text(
+            """
+# 5.咨询方案
+
+# （一）咨询原理和方法：系统脱敏疗法
+系统脱敏疗法用于逐级暴露与放松训练。
+
+# 1．学习放松技巧
+先学习肌肉放松训练。
+
+# 2．建构焦虑等级
+再建构焦虑等级表。
+
+# (二）时间和收费
+学校咨询每周两次，每次五十分钟。
+
+# (三）双方责任、权利和义务
+明确双方责任与保密要求。
+""".strip(),
+            default_title="Sibling Recovery",
+        )
+
+        by_heading = {section.heading: list(section.metadata.get("heading_path") or []) for section in sections}
+        self.assertEqual(["5.咨询方案", "（一）咨询原理和方法：系统脱敏疗法"], by_heading["（一）咨询原理和方法：系统脱敏疗法"])
+        self.assertEqual(["5.咨询方案", "（一）咨询原理和方法：系统脱敏疗法", "1．学习放松技巧"], by_heading["1．学习放松技巧"])
+        self.assertEqual(["5.咨询方案", "(二）时间和收费"], by_heading["(二）时间和收费"])
+        self.assertEqual(["5.咨询方案", "(三）双方责任、权利和义务"], by_heading["(三）双方责任、权利和义务"])
+
     def test_reference_like_body_is_skipped_even_without_reference_heading(self) -> None:
         result = ingest_document(
             data="""
@@ -241,6 +341,137 @@ Evidence Review
         self.assertEqual(["3 认知重构"], result.windows[0].metadata["heading_path"])
         self.assertIn("自动思维识别", list(result.windows[0].metadata.get("subsection_headings") or []))
         self.assertIn("证据检验", list(result.windows[0].metadata.get("subsection_headings") or []))
+
+    def test_outline_llm_reclassifies_detected_heading_candidates(self) -> None:
+        result = ingest_document(
+            data="""
+# 4 治疗过程
+
+# 4.1 关系建立阶段
+先建立关系。
+
+# 4.2 解释阶段
+再做解释与重构。
+""".strip(),
+            title="Outline Classifier",
+            domain="psychology",
+            dry_run=True,
+            ingestor=HeuristicDocumentIngestor(llm=_OutlineMockLLM()),
+        )
+
+        self.assertEqual(1, len(result.windows))
+        first = result.windows[0]
+        self.assertEqual("4 治疗过程", first.section_heading)
+        self.assertEqual(["4 治疗过程"], first.metadata["heading_path"])
+        self.assertIn("4.1 关系建立阶段", list(first.metadata.get("subsection_headings") or []))
+        self.assertIn("4.2 解释阶段", list(first.metadata.get("subsection_headings") or []))
+
+    def test_parse_sections_filters_front_matter_and_backmatter_noise(self) -> None:
+        sections = parse_sections_from_text(
+            """
+# A Case of Counseling
+
+Author Name1,2
+Email: author@example.com
+
+# Abstract
+This is abstract text.
+
+# 1.一般资料
+
+# （一）基本情况
+基本情况内容。
+
+# 2．主诉和个人陈述
+
+# （一）主诉
+主诉内容。
+
+# 3.评估与诊断
+评估内容。
+
+# 4.咨询目标
+咨询目标内容。
+
+# 5.咨询方案
+
+# （一）咨询原理和方法：系统脱敏疗法
+咨询原理内容。
+
+# 1．学习放松技巧
+学习放松技巧内容。
+
+# 2．建构焦虑等级
+建构焦虑等级内容。
+
+# 参考文献 (References)
+[1] Example reference
+
+# 期刊投稿者将享受如下服务：
+推广内容
+""".strip(),
+            default_title="Sample",
+        )
+
+        headings = [section.heading for section in sections]
+        self.assertNotIn("Abstract", headings)
+        self.assertNotIn("Author Name1,2", headings)
+        self.assertNotIn("参考文献 (References)", headings)
+        self.assertNotIn("期刊投稿者将享受如下服务：", headings)
+        by_heading = {section.heading: list(section.metadata.get("heading_path") or []) for section in sections}
+        self.assertEqual(["2．主诉和个人陈述", "（一）主诉"], by_heading["（一）主诉"])
+        self.assertEqual(["5.咨询方案", "（一）咨询原理和方法：系统脱敏疗法", "1．学习放松技巧"], by_heading["1．学习放松技巧"])
+        self.assertEqual(["5.咨询方案", "（一）咨询原理和方法：系统脱敏疗法", "2．建构焦虑等级"], by_heading["2．建构焦虑等级"])
+
+    def test_short_adjacent_windows_are_merged_and_tiny_strict_slice_falls_back(self) -> None:
+        result = ingest_document(
+            data="""
+# 4.咨询目标
+根据以上的评估和诊断，确定如下咨询目标：
+
+1）具体目标：缓解焦虑情绪，尤其是舞台焦虑，改善睡眠状况。
+
+2）近期目标：调整认知和心态，客观地认识自我，学会放松和现实检验。
+
+3）长期目标和最终目标：增强心理韧性，促进心理健康发展。
+
+# 5.咨询方案
+# （一）咨询原理和方法：系统脱敏疗法
+系统脱敏疗法用于逐级暴露与放松训练，并结合认知行为技术。
+
+具体程序：
+
+1．学习放松技巧
+先学习肌肉放松与呼吸放松。
+
+2．建构焦虑等级
+再建立焦虑等级表。
+
+# (二）时间和收费
+学校咨询每周两次，每次五十分钟。
+
+# (三）双方责任、权利和义务
+咨询过程中，双方需要明确责任、权利和义务。
+
+(1）向咨询师提供与心理问题有关的真实资料;
+(2）积极主动地与咨询师一起探索解决问题的方法;
+(3）完成双方商定的作业。
+""".strip(),
+            title="Merge Short Windows",
+            domain="psychology",
+            dry_run=True,
+        )
+
+        by_heading = {}
+        for window in result.windows:
+            by_heading.setdefault(window.section_heading, []).append(window)
+
+        self.assertEqual(1, len(by_heading["4.咨询目标"]))
+        self.assertIn("长期目标和最终目标", by_heading["4.咨询目标"][0].text)
+        self.assertLessEqual(len(by_heading["5.咨询方案"]), 2)
+        joined = "\n".join(window.text for window in by_heading["5.咨询方案"])
+        self.assertIn("系统脱敏疗法", joined)
+        self.assertIn("完成双方商定的作业", joined)
 
     def test_long_section_is_pre_split_before_window_building(self) -> None:
         para1 = "阶段目标 " + ("A" * 4200)

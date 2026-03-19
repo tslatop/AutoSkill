@@ -13,8 +13,10 @@ DEFAULT_EXTRACT_STRATEGY = "recommended"
 SUPPORTED_EXTRACT_STRATEGIES = ("recommended", "strict", "chunk")
 DEFAULT_DOC_SKILL_USER_ID = "docskill"
 DEFAULT_MAX_SECTION_CHARS = 10000
+DEFAULT_MAX_CANDIDATES_PER_UNIT = 5
 DEFAULT_RETRIEVAL_SCORE_THRESHOLD = 0.3
-SUPPORTED_SECTION_OUTLINE_MODES = ("auto", "off")
+DEFAULT_SECTION_OUTLINE_MODE = "llm"
+SUPPORTED_SECTION_OUTLINE_MODES = ("llm", "rule", "auto", "off")
 
 
 def repo_root() -> str:
@@ -58,9 +60,13 @@ def normalize_extract_strategy(value: str) -> str:
 
 
 def normalize_section_outline_mode(value: str) -> str:
-    """Validates and normalizes the public section-outline fallback mode."""
+    """Validates and normalizes the public section-outline mode."""
 
-    raw = str(value or "").strip().lower() or "auto"
+    raw = str(value or "").strip().lower() or DEFAULT_SECTION_OUTLINE_MODE
     if raw not in SUPPORTED_SECTION_OUTLINE_MODES:
         raise ValueError(f"unsupported section outline mode: {value}")
+    if raw == "auto":
+        return "llm"
+    if raw == "off":
+        return "rule"
     return raw

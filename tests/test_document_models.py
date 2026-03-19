@@ -148,6 +148,81 @@ class DocumentModelsTest(unittest.TestCase):
         self.assertIn("title: Intake workflow", document.to_yaml())
         self.assertIn("relation_type: support", support.to_yaml())
 
+    def test_task_family_normalizes_generic_domain_label_to_asset_node(self) -> None:
+        draft = SkillDraft(
+            draft_id="draft-generic-task",
+            doc_id="doc-1",
+            name="动力性心理治疗三阶段框架",
+            description="Structured psychodynamic treatment framework.",
+            asset_type="macro_protocol",
+            granularity="macro",
+            asset_node_id="treatment_framework",
+            asset_path="family_root/treatment_framework",
+            asset_level=1,
+            visible_role="parent",
+            objective="Provide a reusable cross-phase treatment framework.",
+            domain="psychology",
+            task_family="心理咨询",
+            method_family="Psychodynamic",
+            stage="cross-phase",
+            workflow_steps=["Stage 1 assessment", "Stage 2 working through", "Stage 3 closure"],
+            constraints=["Keep the setting stable."],
+            support_ids=["sup-1"],
+            metadata={"family_name": "心理动力学", "domain_root_name": "心理咨询"},
+            confidence=0.8,
+        )
+        skill = SkillSpec(
+            skill_id="skill-generic-task",
+            name="动力性心理治疗三阶段框架",
+            description="Structured psychodynamic treatment framework.",
+            skill_body="# Goal\nRun one structured psychodynamic framework.",
+            asset_type="macro_protocol",
+            granularity="macro",
+            asset_node_id="treatment_framework",
+            asset_path="family_root/treatment_framework",
+            asset_level=1,
+            visible_role="parent",
+            objective="Provide a reusable cross-phase treatment framework.",
+            domain="psychology",
+            task_family="心理咨询",
+            method_family="Psychodynamic",
+            stage="cross-phase",
+            workflow_steps=["Stage 1 assessment", "Stage 2 working through", "Stage 3 closure"],
+            constraints=["Keep the setting stable."],
+            support_ids=["sup-1"],
+            version="0.1.0",
+            status=VersionState.ACTIVE,
+            metadata={"family_name": "心理动力学", "domain_root_name": "心理咨询"},
+        )
+
+        self.assertEqual(draft.task_family, "treatment_framework")
+        self.assertEqual(skill.task_family, "treatment_framework")
+
+    def test_task_family_normalizes_known_aliases(self) -> None:
+        draft = SkillDraft(
+            draft_id="draft-case-formulation",
+            doc_id="doc-1",
+            name="前俄狄浦斯期个案概念化",
+            description="Case formulation workflow.",
+            asset_type="session_skill",
+            granularity="session",
+            asset_node_id="case_formulation",
+            asset_path="family_root/treatment_framework/case_formulation",
+            asset_level=2,
+            visible_role="leaf",
+            objective="Build one case formulation.",
+            domain="psychology",
+            task_family="个案概念化",
+            method_family="Psychodynamic",
+            stage="assessment",
+            workflow_steps=["Collect developmental history", "Formulate core conflict"],
+            constraints=["Ground each hypothesis in evidence."],
+            support_ids=["sup-1"],
+            confidence=0.8,
+        )
+
+        self.assertEqual(draft.task_family, "case_formulation")
+
     def test_validation_errors(self) -> None:
         with self.assertRaises(ValueError):
             SupportRecord(

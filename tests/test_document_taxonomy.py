@@ -61,6 +61,8 @@ class DocumentTaxonomyTest(unittest.TestCase):
         self.assertEqual(taxonomy.domain_type, "chemistry")
         self.assertEqual(taxonomy.normalize_asset_type("experiment_workflow"), "session_skill")
         self.assertEqual(taxonomy.normalize_asset_type("reagent_safety_rule"), "safety_rule")
+        self.assertEqual(taxonomy.strict_normalize_asset_type("experiment_workflow"), "session_skill")
+        self.assertEqual(taxonomy.strict_normalize_asset_type("unknown_type"), "")
         self.assertEqual(taxonomy.resolve_axis_label(), "实验路线")
         self.assertEqual(taxonomy.resolve_family_name(), "通用化学流程")
         self.assertEqual(taxonomy.resolve_asset_node(asset_type="safety_rule").node_id, "reagent_safety_rule_node")
@@ -145,6 +147,12 @@ class DocumentTaxonomyTest(unittest.TestCase):
         self.assertEqual(resolved.source, "rule")
         self.assertGreater(resolved.confidence, 0.5)
 
+    def test_taxonomy_rejects_explicit_family_outside_configured_candidates(self) -> None:
+        taxonomy = load_skill_taxonomy(domain_type="psychology")
+
+        with self.assertRaises(ValueError):
+            taxonomy.ensure_configured_family_candidate(requested="不存在的流派")
+
     def test_family_resolver_uses_taxonomy_default_when_signal_is_weak(self) -> None:
         taxonomy = load_skill_taxonomy(domain_type="psychology")
         resolver = build_document_family_resolver(taxonomy=taxonomy)
@@ -207,6 +215,29 @@ class DocumentTaxonomyTest(unittest.TestCase):
 
         self.assertEqual(resolved.family_name, "通用流程")
         self.assertEqual(resolved.family_id, "general_process")
+        self.assertEqual(resolved.source, "default")
+
+    def test_family_resolver_falls_back_to_default_when_llm_times_out(self) -> None:
+        taxonomy = load_skill_taxonomy(domain_type="psychology")
+
+        class BrokenLLM:
+            def complete(self, *, system=None, user="", temperature=0.0):
+                raise TimeoutError("upstream timeout")
+
+        resolver = build_document_family_resolver(taxonomy=taxonomy, llm=BrokenLLM())
+        record = DocumentRecord(
+            doc_id="psych-doc-llm-timeout",
+            source_type="markdown_document",
+            title="General counseling notes",
+            domain="psychology",
+            raw_text="This text does not contain strong signals for a specific family.",
+            sections=[],
+            content_hash="psych-doc-llm-timeout-hash",
+        )
+
+        resolved = resolver.resolve(documents=[record], metadata={}, allow_llm=True)
+
+        self.assertEqual(resolved.family_name, "通用心理咨询")
         self.assertEqual(resolved.source, "default")
 
     def test_custom_taxonomy_path_overrides_aliases(self) -> None:
@@ -283,3 +314,56 @@ class DocumentTaxonomyTest(unittest.TestCase):
         self.assertEqual(draft.asset_path, "family_root/experiment_protocol/experiment_workflow")
         self.assertEqual(draft.metadata.get("domain_type"), "chemistry")
         self.assertEqual(draft.metadata.get("taxonomy_id"), "chemistry")
+
+    def test_extractor_drops_unknown_asset_type_in_strict_taxonomy_mode(self) -> None:
+        record = DocumentRecord(
+            doc_id="chem-doc-invalid-type",
+            source_type="markdown_document",
+            title="Invalid TLC Notes",
+            domain="chemistry",
+            raw_text="# Analysis\nRun a TLC workflow.\n",
+            sections=[
+                DocumentSection(
+                    heading="Analysis",
+                    text="Run a TLC workflow with plate prep, spotting, development, and reading.",
+                    span=TextSpan(start=0, end=72),
+                )
+            ],
+            content_hash="chem-doc-invalid-type-hash",
+        )
+        windows = build_windows_for_record(record=record, strategy="strict")
+        extractor = build_document_skill_extractor(
+            "llm",
+            llm=MockLLM(
+                response=json.dumps(
+                    {
+                        "skills": [
+                            {
+                                "name": "TLC analysis workflow",
+                                "description": "Run a thin-layer chromatography analysis workflow.",
+                                "prompt": "# Goal\nRun the TLC workflow.\n\n# Core Workflow\n1. Prepare the plate.\n2. Spot the sample.",
+                                "asset_type": "invalid_new_type",
+                                "granularity": "session",
+                                "objective": "Run a TLC analysis workflow.",
+                                "domain": "chemistry",
+                                "task_family": "analysis",
+                                "method_family": "tlc",
+                                "stage": "analysis",
+                                "workflow_steps": ["Prepare the plate.", "Spot the sample."],
+                                "constraints": ["Use the configured solvent system."],
+                                "relation_type": "support",
+                                "risk_class": "low",
+                                "confidence": 0.9,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+            domain_type="chemistry",
+        )
+
+        result = extract_skills(documents=[record], windows=windows, extractor=extractor)
+
+        self.assertEqual(result.skill_drafts, [])
+        self.assertEqual(result.support_records, [])

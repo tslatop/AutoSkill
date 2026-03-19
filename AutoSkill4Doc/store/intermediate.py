@@ -95,6 +95,21 @@ def find_intermediate_run_by_resume_key(*, base_store_root: str, resume_key: str
     return matches[-1]
 
 
+def _extract_error_key(item: Dict[str, Any]) -> str:
+    """Builds a stable dedupe key for persisted extract errors."""
+
+    payload = dict(item or {})
+    payload.pop("stage", None)
+    signature = {
+        "doc_id": str(payload.get("doc_id") or "").strip(),
+        "title": str(payload.get("title") or "").strip(),
+        "source_file": str(payload.get("source_file") or "").strip(),
+        "path": str(payload.get("path") or "").strip(),
+        "error": str(payload.get("error") or "").strip(),
+    }
+    return json.dumps(signature, ensure_ascii=False, sort_keys=True)
+
+
 class IntermediateRunWriter:
     """Writes incremental stage snapshots for one document build run."""
 
@@ -138,6 +153,7 @@ class IntermediateRunWriter:
                 "extract_support_records": 0,
                 "extract_skill_drafts": 0,
                 "processed_documents": 0,
+                "failed_documents": 0,
             },
             "source_file": "",
         }
@@ -238,6 +254,43 @@ class IntermediateRunWriter:
             counts={
                 "documents": total_documents,
                 "processed_documents": min(total_documents, int(progress.get("processed_documents") or 0)),
+                "support_records": int(progress.get("extract_support_records") or 0),
+                "skill_drafts": int(progress.get("extract_skill_drafts") or 0),
+            },
+        )
+
+    def write_extract_error(
+        self,
+        *,
+        record: DocumentRecord,
+        error: Dict[str, Any],
+        total_documents: int,
+    ) -> None:
+        """Writes one per-document extraction failure snapshot."""
+
+        progress = dict(self._state.get("progress_counts") or {})
+        progress["processed_documents"] = int(progress.get("processed_documents") or 0) + 1
+        progress["failed_documents"] = int(progress.get("failed_documents") or 0) + 1
+        self._state["progress_counts"] = progress
+        payload = {
+            "doc_id": record.doc_id,
+            "title": record.title,
+            "source_file": str((record.metadata or {}).get("source_file") or ""),
+            "supports": [],
+            "skill_drafts": [],
+            "failed": True,
+            "error": dict(error or {}),
+            "processed_documents": int(progress.get("processed_documents") or 0),
+            "total_documents": int(total_documents or 0),
+        }
+        doc_name = safe_dir_component(str(record.doc_id or "").strip() or "document")
+        self._write_json(f"extract/documents/{doc_name}.json", payload)
+        self._set_stage(
+            stage="extract_running",
+            counts={
+                "documents": total_documents,
+                "processed_documents": min(total_documents, int(progress.get("processed_documents") or 0)),
+                "failed_documents": int(progress.get("failed_documents") or 0),
                 "support_records": int(progress.get("extract_support_records") or 0),
                 "skill_drafts": int(progress.get("extract_skill_drafts") or 0),
             },
@@ -366,6 +419,8 @@ class IntermediateRunWriter:
                 except Exception as exc:
                     errors.append({"path": path, "error": str(exc)})
                     continue
+                if isinstance(payload.get("error"), dict):
+                    errors.append(dict(payload.get("error") or {}))
                 for item in list(payload.get("supports") or []):
                     if isinstance(item, dict):
                         support_records.append(SupportRecord.from_dict(item))
@@ -383,12 +438,19 @@ class IntermediateRunWriter:
             windows=windows,
             support_records=list(seen_supports.values()),
             skill_drafts=list(seen_drafts.values()),
-            errors=[{"stage": "intermediate_extract_load", **item} for item in errors],
+            errors=[
+                {"stage": "intermediate_extract_load", **item}
+                for item in {
+                    _extract_error_key(dict(item or {})): dict(item or {})
+                    for item in errors
+                    if isinstance(item, dict)
+                }.values()
+            ],
             extractor_name="llm",
         )
 
     def processed_extract_doc_ids(self) -> List[str]:
-        """Returns document ids that already have per-document extract snapshots."""
+        """Returns document ids with successful per-document extract snapshots."""
 
         extract_dir = os.path.join(self.run_dir, "extract", "documents")
         out: List[str] = []
@@ -402,6 +464,8 @@ class IntermediateRunWriter:
                 with open(path, "r", encoding="utf-8") as f:
                     payload = json.load(f)
             except Exception:
+                continue
+            if bool((payload or {}).get("failed")):
                 continue
             doc_id = str((payload or {}).get("doc_id") or "").strip()
             if doc_id:

@@ -23,8 +23,10 @@ from .core.common import StageLogger, compact_metadata
 from .core.config import (
     DEFAULT_DOC_SKILL_USER_ID,
     DEFAULT_EXTRACT_STRATEGY,
+    DEFAULT_MAX_CANDIDATES_PER_UNIT,
     DEFAULT_MAX_SECTION_CHARS,
     DEFAULT_RETRIEVAL_SCORE_THRESHOLD,
+    DEFAULT_SECTION_OUTLINE_MODE,
     default_store_path,
 )
 from .core.provider_config import allow_mock_provider, ensure_runtime_llm_provider
@@ -192,7 +194,10 @@ class DocumentBuildPipeline:
                 llm=getattr(current, "_llm", None),
                 max_section_chars=int(getattr(current, "max_section_chars", DEFAULT_MAX_SECTION_CHARS) or DEFAULT_MAX_SECTION_CHARS),
                 overlap_chars=int(getattr(current, "overlap_chars", 0) or 0),
-                max_candidates_per_unit=int(getattr(current, "max_candidates_per_unit", 3) or 3),
+                max_candidates_per_unit=int(
+                    getattr(current, "max_candidates_per_unit", DEFAULT_MAX_CANDIDATES_PER_UNIT)
+                    or DEFAULT_MAX_CANDIDATES_PER_UNIT
+                ),
                 max_units_per_document=int(getattr(current, "max_units_per_document", 0) or 0),
                 extract_workers=int(getattr(current, "extract_workers", 1) or 1),
                 extract_retries=int(getattr(current, "extract_retries", 3) or 0),
@@ -341,7 +346,10 @@ class DocumentBuildPipeline:
                 llm_config=dict(getattr(extractor, "_llm_config", {}) or {}),
                 max_section_chars=int(getattr(extractor, "max_section_chars", DEFAULT_MAX_SECTION_CHARS) or DEFAULT_MAX_SECTION_CHARS),
                 overlap_chars=int(getattr(extractor, "overlap_chars", 0) or 0),
-                max_candidates_per_unit=int(getattr(extractor, "max_candidates_per_unit", 3) or 3),
+                max_candidates_per_unit=int(
+                    getattr(extractor, "max_candidates_per_unit", DEFAULT_MAX_CANDIDATES_PER_UNIT)
+                    or DEFAULT_MAX_CANDIDATES_PER_UNIT
+                ),
                 max_units_per_document=int(getattr(extractor, "max_units_per_document", 0) or 0),
                 extract_workers=max(1, int(extract_workers or 1)),
                 extract_retries=int(getattr(extractor, "extract_retries", 3) or 0),
@@ -774,7 +782,7 @@ def build_default_document_pipeline(
         or HeuristicDocumentIngestor(
             llm_config=dict(getattr(getattr(sdk, "config", None), "llm", {}) or {}),
             max_section_chars=DEFAULT_MAX_SECTION_CHARS,
-            outline_fallback_mode="auto",
+            outline_fallback_mode=DEFAULT_SECTION_OUTLINE_MODE,
         ),
         document_skill_extractor=document_skill_extractor
         or build_document_skill_extractor(

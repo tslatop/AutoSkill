@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 from autoskill.llm.base import LLM
 from autoskill.llm.factory import build_llm
 
-from .core.common import StageLogger, document_progress_label, emit_stage_log
-from .core.config import DEFAULT_EXTRACT_STRATEGY, DEFAULT_MAX_SECTION_CHARS, normalize_extract_strategy, normalize_section_outline_mode
+from .core.common import StageLogger, document_progress_label, emit_stage_log, normalize_text
+from .core.config import DEFAULT_EXTRACT_STRATEGY, DEFAULT_MAX_SECTION_CHARS, DEFAULT_SECTION_OUTLINE_MODE, normalize_extract_strategy, normalize_section_outline_mode
 from .core.llm_utils import llm_complete_json, maybe_json_dict
 from .document.file_loader import data_to_text_unit, load_file_units
 from .document.windowing import build_windows_for_record
@@ -30,6 +30,7 @@ from .store.registry import DocumentRegistry
 
 _MARKDOWN_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*$")
 _DECIMAL_HEADING_RE = re.compile(r"^\s*(\d+(?:\.\d+){0,4})(?:\s*[.)、])?\s+(.+?)\s*$")
+_DECIMAL_INLINE_HEADING_RE = re.compile(r"^\s*(\d+(?:\.\d+){0,4})(?:\s*[.)、])?\s*(.+?)\s*$")
 _CHAPTER_HEADING_RE = re.compile(r"^\s*第([一二三四五六七八九十百零〇\d]+)(章|节|部分|篇)\s+(.+?)\s*$")
 _CN_ENUM_HEADING_RE = re.compile(r"^\s*([一二三四五六七八九十百零〇]+)[、.]\s*(.+?)\s*$")
 _PAREN_ENUM_HEADING_RE = re.compile(r"^\s*[（(]([一二三四五六七八九十百零〇\d]+)[）)]\s*(.+?)\s*$")
@@ -39,7 +40,27 @@ _REFERENCE_LINE_RE = re.compile(
     r"^\s*(?:\[\d+\]|\(\d+\)|\d+\.\s+.+\b(?:19|20)\d{2}[a-z]?\b.+|.+\bdoi\b.+|https?://\S+)",
     re.IGNORECASE,
 )
+_AUTHOR_HEADING_RE = re.compile(r"^[A-Za-z\u4e00-\u9fff·•\s]+(?:\d+(?:,\d+)*)?$")
+_CONTACT_LINE_RE = re.compile(r"\b(?:email|e-mail|received|accepted|published)\b|收稿日期|录用日期|发布日期", re.IGNORECASE)
+_NON_CONTENT_HEADING_MARKERS = {
+    "abstract",
+    "keywords",
+    "keyword",
+    "summary",
+    "摘要",
+    "关键词",
+}
+_TERMINAL_BACKMATTER_MARKERS = (
+    "references",
+    "reference",
+    "bibliography",
+    "acknowledg",
+    "致谢",
+    "参考文献",
+    "附录",
+)
 _OUTLINE_FALLBACK_MAX_CANDIDATES = 64
+_OUTLINE_RULE_CANDIDATE_LIMIT = 96
 
 
 @dataclass(frozen=True)
@@ -60,6 +81,9 @@ def _looks_like_heading_title(title: str, *, allow_sentence_like: bool = False) 
     text = str(title or "").strip()
     if not text:
         return False
+    normalized = normalize_text(text, lower=True)
+    if normalized in _NON_CONTENT_HEADING_MARKERS:
+        return False
     if len(text) > 120:
         return False
     if text.startswith(("-", "*", "•")):
@@ -73,6 +97,36 @@ def _looks_like_heading_title(title: str, *, allow_sentence_like: bool = False) 
     return True
 
 
+def _looks_like_front_matter_heading(heading: str, *, preview: str = "") -> bool:
+    """Detects title/author/contact-like lines that should not become sections."""
+
+    text = str(heading or "").strip()
+    if not text:
+        return False
+    normalized = normalize_text(text, lower=True)
+    if normalized in _NON_CONTENT_HEADING_MARKERS:
+        return True
+    preview_text = str(preview or "").strip()
+    if preview_text and _CONTACT_LINE_RE.search(preview_text):
+        return True
+    if _AUTHOR_HEADING_RE.fullmatch(text) and len(text) <= 24:
+        bare = re.sub(r"[\d,\s·•]", "", text)
+        if 2 <= len(bare) <= 12 and (re.search(r"\d", text) or "," in text or "@" in preview_text):
+            return True
+    return False
+
+
+def _looks_like_front_matter_body(text: str) -> bool:
+    """Detects abstract/keywords/contact front matter before real sections begin."""
+
+    normalized = normalize_text(str(text or ""), lower=True)
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in _NON_CONTENT_HEADING_MARKERS):
+        return True
+    return bool(_CONTACT_LINE_RE.search(str(text or "")))
+
+
 def _detect_heading(line: str, *, start: int, end: int) -> Optional[_DetectedHeading]:
     """Detects markdown, numbered, and Chinese section headings in one line."""
 
@@ -80,10 +134,42 @@ def _detect_heading(line: str, *, start: int, end: int) -> Optional[_DetectedHea
     if not text:
         return None
 
+    def _markdown_numbered_heading(heading_text: str) -> Optional[_DetectedHeading]:
+        """Infers subsection hierarchy from numbered markdown headings."""
+
+        chapter_match = _CHAPTER_HEADING_RE.match(heading_text)
+        if chapter_match:
+            return _DetectedHeading(
+                start=start,
+                end=end,
+                heading=heading_text,
+                level=1,
+                number=str(chapter_match.group(1) or "").strip(),
+                kind="markdown_chapter",
+            )
+
+        decimal_match = _DECIMAL_INLINE_HEADING_RE.match(heading_text)
+        if decimal_match:
+            number = str(decimal_match.group(1) or "").strip()
+            title = str(decimal_match.group(2) or "").strip()
+            if title and _looks_like_heading_title(title, allow_sentence_like=True):
+                return _DetectedHeading(
+                    start=start,
+                    end=end,
+                    heading=heading_text,
+                    level=max(1, number.count(".") + 1),
+                    number=number,
+                    kind="markdown_decimal",
+                )
+        return None
+
     match = _MARKDOWN_HEADING_RE.match(text)
     if match:
         heading = str(match.group(2) or "").strip()
         if _looks_like_heading_title(heading, allow_sentence_like=True):
+            inferred = _markdown_numbered_heading(heading)
+            if inferred is not None:
+                return inferred
             return _DetectedHeading(start=start, end=end, heading=heading, level=len(match.group(1)), kind="markdown")
 
     match = _CHAPTER_HEADING_RE.match(text)
@@ -140,7 +226,196 @@ def _detect_headings(src: str) -> List[_DetectedHeading]:
         if detected is not None:
             matches.append(detected)
         cursor = end
-    return matches
+    return _normalize_detected_heading_levels(matches)
+
+
+def _heading_sequence_info(heading: str) -> Dict[str, Any]:
+    """Extracts numbering style information from one heading title."""
+
+    text = str(heading or "").strip()
+    if not text:
+        return {}
+    match = _CHAPTER_HEADING_RE.match(text)
+    if match:
+        return {"style": "chapter", "number": str(match.group(1) or "").strip(), "level": 1}
+    match = _DECIMAL_INLINE_HEADING_RE.match(text)
+    if match:
+        number = str(match.group(1) or "").strip()
+        title = str(match.group(2) or "").strip()
+        if title and _looks_like_heading_title(title, allow_sentence_like=True):
+            return {
+                "style": "decimal",
+                "number": number,
+                "level": max(1, number.count(".") + 1),
+                "has_dot": "." in number,
+            }
+    match = _PAREN_ENUM_HEADING_RE.match(text)
+    if match:
+        return {"style": "paren", "number": str(match.group(1) or "").strip()}
+    match = _CN_ENUM_HEADING_RE.match(text)
+    if match:
+        return {"style": "cn_enum", "number": str(match.group(1) or "").strip()}
+    match = _ROMAN_HEADING_RE.match(text)
+    if match:
+        return {"style": "roman", "number": str(match.group(1) or "").strip()}
+    return {}
+
+
+def _enum_style_family(style: str, number: str) -> str:
+    """Builds a coarse numbering family for matching sibling heading styles."""
+
+    raw_style = str(style or "").strip()
+    raw_number = str(number or "").strip()
+    if raw_style == "paren":
+        return "paren_digit" if re.fullmatch(r"\d+", raw_number) else "paren_cn"
+    return raw_style
+
+
+def _previous_same_style_level(
+    *,
+    history: Sequence[_DetectedHeading],
+    style: str,
+    number: str,
+) -> int:
+    """Finds the most recent same-style heading level for sibling recovery."""
+
+    target_family = _enum_style_family(style, number)
+    for previous_heading in reversed(list(history or [])):
+        previous_info = _heading_sequence_info(previous_heading.heading)
+        previous_style = str(previous_info.get("style") or "").strip()
+        previous_number = str(previous_info.get("number") or "").strip()
+        if _enum_style_family(previous_style, previous_number) != target_family:
+            continue
+        level = int(previous_heading.level or 0)
+        if level > 0:
+            return level
+    return 0
+
+
+def _contextual_heading_level(
+    *,
+    style: str,
+    previous: Optional[_DetectedHeading],
+    history: Sequence[_DetectedHeading],
+    next_info: Dict[str, Any],
+) -> int:
+    """Infers levels for ambiguous heading styles using neighboring headings."""
+
+    prev_info = _heading_sequence_info(previous.heading) if previous is not None else {}
+    prev_level = int(previous.level or 0) if previous is not None else 0
+    prev_style = str(prev_info.get("style") or "").strip()
+    next_style = str(next_info.get("style") or "").strip()
+
+    if style == "paren":
+        current_number = str(next_info.get("current_number") or "").strip()
+        if re.fullmatch(r"\d+", current_number):
+            prev_number = str(prev_info.get("number") or "").strip()
+            next_number = str(next_info.get("number") or "").strip()
+            current_value = int(current_number)
+            if prev_style == "paren" and re.fullmatch(r"\d+", prev_number) and abs(current_value - int(prev_number)) <= 1 and prev_level > 0:
+                return prev_level
+            if prev_style in {"decimal", "chapter"} and prev_level > 0 and current_value <= 4:
+                return min(prev_level + 1, 4)
+            if next_style == "paren" and re.fullmatch(r"\d+", next_number) and abs(int(next_number) - current_value) == 1 and prev_level > 0:
+                return min(prev_level + 1, 4)
+            return 0
+        sibling_level = _previous_same_style_level(history=history, style=style, number=current_number)
+        if sibling_level > 0:
+            return sibling_level
+        if prev_style == "paren" and prev_level > 0:
+            return prev_level
+        if prev_level >= 2:
+            return min(prev_level + 1, 4)
+        return 2
+
+    if style in {"cn_enum", "roman"}:
+        sibling_level = _previous_same_style_level(
+            history=history,
+            style=style,
+            number=str(next_info.get("current_number") or "").strip(),
+        )
+        if sibling_level > 0:
+            return sibling_level
+        if prev_style == style and prev_level > 0:
+            return prev_level
+        if prev_level >= 1:
+            return min(prev_level + 1, 4)
+        if next_style == style:
+            return 1
+        return 1
+
+    return 1
+
+
+def _normalize_detected_heading_levels(matches: List[_DetectedHeading]) -> List[_DetectedHeading]:
+    """Normalizes raw heading detections using numbering depth and local sequence context."""
+
+    if not matches:
+        return []
+    normalized: List[_DetectedHeading] = []
+    for idx, match in enumerate(list(matches or [])):
+        info = _heading_sequence_info(match.heading)
+        next_info = _heading_sequence_info(matches[idx + 1].heading) if idx + 1 < len(matches) else {}
+        if next_info:
+            next_info = {**next_info, "current_number": str(match.number or "").strip()}
+        level = int(match.level or 1)
+        kind = str(match.kind or "").strip() or "plain"
+        number = str(match.number or "").strip()
+        style = str(info.get("style") or "").strip()
+        if style in {"decimal", "chapter"}:
+            has_dot = bool(info.get("has_dot"))
+            if style == "decimal" and not has_dot:
+                prev_info = _heading_sequence_info(normalized[-1].heading) if normalized else {}
+                prev_style = str(prev_info.get("style") or "").strip()
+                prev_level = int(normalized[-1].level or 0) if normalized else 0
+                prev_number = str(prev_info.get("number") or "").strip()
+                previous_root_number = ""
+                for previous_heading in reversed(normalized):
+                    previous_root_info = _heading_sequence_info(previous_heading.heading)
+                    if str(previous_root_info.get("style") or "").strip() != "decimal":
+                        continue
+                    if bool(previous_root_info.get("has_dot")):
+                        continue
+                    if int(previous_heading.level or 0) != 1:
+                        continue
+                    previous_root_number = str(previous_root_info.get("number") or "").strip()
+                    break
+                if re.fullmatch(r"\d+", number) and re.fullmatch(r"\d+", previous_root_number) and int(number) == int(previous_root_number) + 1:
+                    level = 1
+                elif prev_style == "decimal" and not bool(prev_info.get("has_dot")) and re.fullmatch(r"\d+", prev_number) and re.fullmatch(r"\d+", number) and abs(int(number) - int(prev_number)) <= 1 and prev_level >= 2:
+                    level = prev_level
+                elif prev_style == "paren" and prev_level >= 2:
+                    level = min(prev_level + 1, 4)
+                else:
+                    level = int(info.get("level") or level or 1)
+            else:
+                level = int(info.get("level") or level or 1)
+            number = str(info.get("number") or number or "").strip()
+            if kind == "markdown":
+                kind = f"markdown_{style}"
+        elif style in {"paren", "cn_enum", "roman"}:
+            level = _contextual_heading_level(
+                style=style,
+                previous=normalized[-1] if normalized else None,
+                history=normalized,
+                next_info=next_info,
+            )
+            number = str(info.get("number") or number or "").strip()
+            if kind == "markdown":
+                kind = f"markdown_{style}"
+        if level <= 0:
+            continue
+        normalized.append(
+            _DetectedHeading(
+                start=int(match.start or 0),
+                end=int(match.end or 0),
+                heading=str(match.heading or "").strip(),
+                level=max(1, min(level, 6)),
+                number=number,
+                kind=kind,
+            )
+        )
+    return normalized
 
 
 def _first_nonempty_paragraph(text: str, *, limit: int = 180) -> str:
@@ -219,7 +494,7 @@ def _build_sections_from_headings(src: str, matches: List[_DetectedHeading], *, 
     first = matches[0]
     if first.start > 0:
         prefix = src[: first.start].strip()
-        if prefix:
+        if prefix and not _looks_like_front_matter_body(prefix):
             overview = str(default_title or "Overview").strip() or "Overview"
             out.append(
                 DocumentSection(
@@ -241,6 +516,8 @@ def _build_sections_from_headings(src: str, matches: List[_DetectedHeading], *, 
         body = src[content_start:content_end].strip()
         if not body:
             continue
+        if _looks_like_front_matter_heading(match.heading, preview=body[:240]):
+            continue
         path = [item.heading for item in heading_stack]
         out.append(
             DocumentSection(
@@ -256,7 +533,18 @@ def _build_sections_from_headings(src: str, matches: List[_DetectedHeading], *, 
                 },
             )
         )
-    return _annotate_section_hierarchy(out) if out else _fallback_single_section(src, default_title=default_title)
+    sections = _annotate_section_hierarchy(out) if out else _fallback_single_section(src, default_title=default_title)
+    trimmed: List[DocumentSection] = []
+    stop_after_backmatter = False
+    for section in sections:
+        if stop_after_backmatter:
+            break
+        heading_normalized = normalize_text(section.heading, lower=True)
+        if any(marker in heading_normalized for marker in _TERMINAL_BACKMATTER_MARKERS):
+            stop_after_backmatter = True
+            break
+        trimmed.append(section)
+    return trimmed or sections
 
 
 def _iter_line_records(src: str) -> List[Dict[str, Any]]:
@@ -332,29 +620,94 @@ def _heading_outline_candidates(src: str) -> List[Dict[str, Any]]:
     return candidates
 
 
+def _outline_candidates_from_rule_matches(matches: List[_DetectedHeading]) -> List[Dict[str, Any]]:
+    """Turns rule-detected headings into one compact LLM candidate list."""
+
+    candidates: List[Dict[str, Any]] = []
+    for match in list(matches or [])[:_OUTLINE_RULE_CANDIDATE_LIMIT]:
+        candidates.append(
+            {
+                "candidate_index": len(candidates),
+                "line_index": -1,
+                "text": str(match.heading or "").strip(),
+                "preview": "",
+                "start": int(match.start or 0),
+                "end": int(match.end or 0),
+                "rule_level": int(match.level or 1),
+                "rule_kind": str(match.kind or "").strip(),
+                "rule_number": str(match.number or "").strip(),
+            }
+        )
+    return candidates
+
+
+def _merged_outline_candidates(src: str, matches: List[_DetectedHeading]) -> List[Dict[str, Any]]:
+    """Builds one deduplicated candidate list from rules first, then heuristics."""
+
+    merged: List[Dict[str, Any]] = []
+    seen: set[tuple[int, int, str]] = set()
+    for item in list(_outline_candidates_from_rule_matches(matches)) + list(_heading_outline_candidates(src)):
+        key = (
+            int(item.get("start") or 0),
+            int(item.get("end") or 0),
+            str(item.get("text") or "").strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        payload = dict(item)
+        payload["candidate_index"] = len(merged)
+        merged.append(payload)
+        if len(merged) >= _OUTLINE_FALLBACK_MAX_CANDIDATES:
+            break
+    return merged
+
+
+def _outline_candidate_neighbors(candidates: List[Dict[str, Any]], index: int) -> Tuple[str, str]:
+    """Returns neighboring candidate titles for one outline item."""
+
+    previous = ""
+    next_text = ""
+    if index - 1 >= 0:
+        previous = str(candidates[index - 1].get("text") or "").strip()
+    if index + 1 < len(candidates):
+        next_text = str(candidates[index + 1].get("text") or "").strip()
+    return previous, next_text
+
+
 def _outline_matches_from_llm(
     *,
     src: str,
     default_title: str,
     llm: Optional[LLM],
+    rule_matches: Optional[List[_DetectedHeading]] = None,
 ) -> List[_DetectedHeading]:
-    """Runs one compact outline-classification call when rule-based heading detection found nothing."""
+    """Runs one compact outline-classification call over heading candidates."""
 
     if llm is None:
         return []
-    candidates = _heading_outline_candidates(src)
+    candidates = _merged_outline_candidates(src, list(rule_matches or []))
     if len(candidates) < 2:
         return []
 
     payload = {
         "title": str(default_title or "").strip(),
-        "instruction": "Identify only true structural section or subsection headings. Ignore bullets, references, lists, and ordinary sentences.",
+        "instruction": (
+            "Identify only true structural section or subsection headings. "
+            "Ignore document titles, author or affiliation lines, abstracts, keywords, references, promotional text, "
+            "and numbered procedure/list items unless they clearly start a sustained subsection with its own body."
+        ),
         "candidates": [
             {
                 "candidate_index": item["candidate_index"],
                 "line_index": item["line_index"],
                 "text": item["text"],
                 "preview": item["preview"],
+                "previous_candidate": _outline_candidate_neighbors(candidates, item["candidate_index"])[0],
+                "next_candidate": _outline_candidate_neighbors(candidates, item["candidate_index"])[1],
+                "rule_hint_level": int(item.get("rule_level") or 0),
+                "rule_hint_kind": str(item.get("rule_kind") or "").strip(),
+                "rule_hint_number": str(item.get("rule_number") or "").strip(),
             }
             for item in candidates
         ],
@@ -365,7 +718,14 @@ def _outline_matches_from_llm(
         "Rules:\n"
         "- Include only real structural headings.\n"
         "- level 1 means top-level section, level 2 means subsection, level 3 means sub-subsection.\n"
-        "- Ignore references, bibliography, acknowledgements, figure/table captions, bullet items, and normal prose lines.\n"
+        "- Use neighboring candidate titles and preview text to infer continuity.\n"
+        "- Prefer hierarchy continuity: siblings with the same numbering style usually stay at the same level unless a clear parent heading intervenes.\n"
+        "- Prefer broader section headings over short in-body checklist items.\n"
+        "- Use rule_hint_level and rule_hint_kind as weak hints only; you may override them when the title sequence indicates a better hierarchy.\n"
+        "- Ignore document titles, author names, affiliations, contact/publication metadata, abstract/keywords headings, references, bibliography, acknowledgements, figure/table captions, bullet items, and normal prose lines.\n"
+        "- Ignore numbered list or procedure items such as 1., 1), (1), (7) inside a body unless they clearly begin a substantial subsection followed by its own paragraph block.\n"
+        "- Prefer fewer but higher-confidence headings over over-segmenting body lists into fake sections.\n"
+        "- When two choices are plausible, prefer the shallower level unless there is strong evidence for a deeper subsection.\n"
         "- Use relative levels within this document only.\n"
     )
     repair_system = (
@@ -414,23 +774,11 @@ def _outline_matches_from_llm(
 
 
 def _should_try_outline_fallback(src: str, matches: List[_DetectedHeading]) -> bool:
-    """Returns whether one document structure looks weak enough to justify one outline pass."""
+    """Returns whether one document has enough heading candidates for one outline pass."""
 
     if not str(src or "").strip():
         return False
-    if not matches:
-        return True
-    candidates = _heading_outline_candidates(src)
-    if len(candidates) < 3:
-        return False
-    top_level_count = sum(1 for item in matches if int(item.level or 1) <= 1)
-    if len(matches) == 1:
-        return True
-    if top_level_count <= 1 and len(matches) <= 2 and len(candidates) >= 4:
-        return True
-    if top_level_count <= 1 and len(candidates) >= max(len(matches) + 3, 5):
-        return True
-    return False
+    return len(_merged_outline_candidates(src, matches)) >= 2
 
 
 def _prefer_outline_matches(
@@ -618,7 +966,7 @@ class HeuristicDocumentIngestor:
         llm: Optional[LLM] = None,
         llm_config: Optional[Dict[str, Any]] = None,
         max_section_chars: int = DEFAULT_MAX_SECTION_CHARS,
-        outline_fallback_mode: str = "auto",
+        outline_fallback_mode: str = DEFAULT_SECTION_OUTLINE_MODE,
     ) -> None:
         """Builds one document ingestor with optional low-frequency outline LLM fallback."""
 
@@ -630,7 +978,7 @@ class HeuristicDocumentIngestor:
     def _outline_llm(self) -> Optional[LLM]:
         """Lazily builds the optional outline-classification LLM."""
 
-        if self.outline_fallback_mode == "off":
+        if self.outline_fallback_mode == "rule":
             return None
         if self._llm is not None:
             return self._llm
@@ -641,17 +989,22 @@ class HeuristicDocumentIngestor:
         return self._llm
 
     def _parse_sections_with_fallback(self, *, raw_text: str, default_title: str, logger: StageLogger) -> List[DocumentSection]:
-        """Uses rule-based headings first, then one outline LLM fallback if needed."""
+        """Uses rule-based heading recall, then one outline LLM classification pass by default."""
 
         src = str(raw_text or "")
         matches = _detect_headings(src)
         llm = self._outline_llm() if _should_try_outline_fallback(src, matches) else None
         if llm is not None:
-            llm_matches = _outline_matches_from_llm(src=src, default_title=default_title, llm=llm)
-            if _prefer_outline_matches(src=src, rule_matches=matches, llm_matches=llm_matches):
+            llm_matches = _outline_matches_from_llm(
+                src=src,
+                default_title=default_title,
+                llm=llm,
+                rule_matches=matches,
+            )
+            if llm_matches:
                 emit_stage_log(
                     logger,
-                    f"[ingest_document] outline-fallback title={default_title or 'document'} rule_headings={len(matches)} llm_headings={len(llm_matches)}",
+                    f"[ingest_document] outline-llm title={default_title or 'document'} rule_headings={len(matches)} llm_headings={len(llm_matches)}",
                 )
                 return _build_sections_from_headings(src, llm_matches, default_title=default_title)
         if matches:

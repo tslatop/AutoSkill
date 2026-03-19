@@ -307,6 +307,123 @@ def _group_indices(blocks: Sequence[ParagraphBlock], *, priority_markers: Sequen
     return groups
 
 
+def _selected_group_range(group: Tuple[int, int], *, total_blocks: int) -> Tuple[int, int]:
+    """Expands one process group with a small amount of surrounding context."""
+
+    start_idx, end_idx = group
+    left = max(0, start_idx - 1)
+    right = min(max(0, total_blocks - 1), end_idx + 1)
+    return left, right
+
+
+def _block_range_text_len(blocks: Sequence[ParagraphBlock], start_idx: int, end_idx: int) -> int:
+    """Computes merged text length for one inclusive block range."""
+
+    return len("\n\n".join(block.text for block in list(blocks or [])[start_idx : end_idx + 1]))
+
+
+def _merge_compact_group_ranges(
+    blocks: Sequence[ParagraphBlock],
+    groups: Sequence[Tuple[int, int]],
+    *,
+    max_chars: int,
+    merge_target_chars: int = 220,
+    merge_gap: int = 2,
+) -> List[Tuple[int, int]]:
+    """Merges overly fragmented adjacent group ranges into larger local windows."""
+
+    if not groups:
+        return []
+    total_blocks = len(list(blocks or []))
+    ranges = [_selected_group_range(group, total_blocks=total_blocks) for group in list(groups or [])]
+    merged: List[Tuple[int, int]] = []
+    current_start, current_end = ranges[0]
+    current_len = _block_range_text_len(blocks, current_start, current_end)
+
+    for next_start, next_end in ranges[1:]:
+        next_len = _block_range_text_len(blocks, next_start, next_end)
+        gap = max(0, next_start - current_end - 1)
+        combined_start = current_start
+        combined_end = max(current_end, next_end)
+        combined_len = _block_range_text_len(blocks, combined_start, combined_end)
+        should_merge = (
+            gap <= max(0, int(merge_gap))
+            and combined_len <= max(1, int(max_chars or 0))
+            and (
+                current_len < merge_target_chars
+                or next_len < merge_target_chars
+                or combined_len <= merge_target_chars * 2
+            )
+        )
+        if should_merge:
+            current_end = combined_end
+            current_len = combined_len
+            continue
+        merged.append((current_start, current_end))
+        current_start, current_end = next_start, next_end
+        current_len = next_len
+
+    merged.append((current_start, current_end))
+    return merged
+
+
+def _build_windows_from_group_ranges(
+    *,
+    record: DocumentRecord,
+    section: DocumentSection,
+    blocks: Sequence[ParagraphBlock],
+    group_ranges: Sequence[Tuple[int, int]],
+    effective_strategy: str,
+    max_chars: int,
+) -> List[StrictWindow]:
+    """Builds one strict window list from merged block ranges."""
+
+    out: List[StrictWindow] = []
+    for left, right in list(group_ranges or []):
+        selected = list(blocks[left : right + 1])
+        text_len = len("\n\n".join(block.text for block in selected))
+        while text_len > max_chars and len(selected) > 1:
+            if len(selected[0].text) >= len(selected[-1].text):
+                selected = selected[1:]
+            else:
+                selected = selected[:-1]
+            text_len = len("\n\n".join(block.text for block in selected))
+        if selected:
+            out.append(
+                _window_from_blocks(
+                    record=record,
+                    section=section,
+                    blocks=selected,
+                    effective_strategy=effective_strategy,
+                )
+            )
+    return out
+
+
+def _should_fallback_from_strict(
+    section: DocumentSection,
+    strict_windows: Sequence[StrictWindow],
+    *,
+    max_chars: int,
+) -> bool:
+    """Detects when strict grouping produced windows that are too sparse or tiny."""
+
+    section_len = len(str(section.text or "").strip())
+    if section_len <= 0:
+        return False
+    windows = list(strict_windows or [])
+    if not windows:
+        return True
+    covered_chars = sum(len(str(window.text or "").strip()) for window in windows)
+    if len(windows) == 1:
+        only = len(str(windows[0].text or "").strip())
+        if only < min(160, max(80, int(max_chars * 0.2))) and section_len >= max(400, only * 3):
+            return True
+    if section_len >= 600 and covered_chars < max(160, int(section_len * 0.2)):
+        return True
+    return False
+
+
 def _bounded_fallback_windows(
     *,
     record: DocumentRecord,
@@ -569,25 +686,26 @@ def build_windows_for_record(
                 )
                 continue
 
-            for start_idx, end_idx in groups:
-                left = max(0, start_idx - 1)
-                right = min(len(blocks) - 1, end_idx + 1)
-                selected = list(blocks[left : right + 1])
-                text_len = len("\n\n".join(block.text for block in selected))
-                while text_len > max_chars and len(selected) > 1:
-                    if len(selected[0].text) >= len(selected[-1].text):
-                        selected = selected[1:]
-                    else:
-                        selected = selected[:-1]
-                    text_len = len("\n\n".join(block.text for block in selected))
-                if selected:
-                    windows.append(
-                        _window_from_blocks(
-                            record=record,
-                            section=section_chunk,
-                            blocks=selected,
-                            effective_strategy=effective_strategy,
-                        )
+            merged_ranges = _merge_compact_group_ranges(blocks, groups, max_chars=max_chars)
+            strict_windows = _build_windows_from_group_ranges(
+                record=record,
+                section=section_chunk,
+                blocks=blocks,
+                group_ranges=merged_ranges,
+                effective_strategy=effective_strategy,
+                max_chars=max_chars,
+            )
+            if _should_fallback_from_strict(section_chunk, strict_windows, max_chars=max_chars):
+                windows.extend(
+                    _bounded_fallback_windows(
+                        record=record,
+                        section=section_chunk,
+                        blocks=blocks,
+                        effective_strategy=effective_strategy,
+                        max_chars=max_chars,
                     )
+                )
+                continue
+            windows.extend(strict_windows)
 
     return windows

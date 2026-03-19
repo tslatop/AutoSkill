@@ -22,7 +22,7 @@ from AutoSkill4Doc import (
     skill_retrieval_text,
 )
 from AutoSkill4Doc.__main__ import main as autoskill4doc_main
-from AutoSkill4Doc.core.config import DEFAULT_DOC_SKILL_USER_ID, default_store_path
+from AutoSkill4Doc.core.config import DEFAULT_DOC_SKILL_USER_ID, DEFAULT_SECTION_OUTLINE_MODE, default_store_path, normalize_section_outline_mode
 from AutoSkill4Doc.extract import _build_sdk_from_args, build_parser, main
 
 
@@ -231,7 +231,7 @@ class DocumentCliTest(unittest.TestCase):
                     "--quiet",
                     "--json",
                     "--section-outline-mode",
-                    "off",
+                    "rule",
                     "--max-section-chars",
                     "10000",
                     "--store-path",
@@ -241,6 +241,13 @@ class DocumentCliTest(unittest.TestCase):
 
             self.assertEqual(len(payload["documents"]), 1)
             self.assertGreaterEqual(len(payload["windows"]), 1)
+
+    def test_section_outline_mode_defaults_to_llm_with_compat_aliases(self) -> None:
+        args = build_parser().parse_args(["ingest", "--file", "/tmp/paper.md"])
+        self.assertEqual(DEFAULT_SECTION_OUTLINE_MODE, args.section_outline_mode)
+        self.assertEqual("llm", normalize_section_outline_mode(args.section_outline_mode))
+        self.assertEqual("llm", normalize_section_outline_mode("auto"))
+        self.assertEqual("rule", normalize_section_outline_mode("off"))
 
     def test_compile_command_returns_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

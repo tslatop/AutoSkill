@@ -63,7 +63,7 @@ class DocumentFamilyResolver:
         """Resolves one family for the current batch."""
 
         md = dict(metadata or {})
-        explicit = self.taxonomy.resolve_family_candidate(metadata=md)
+        explicit = self.taxonomy.ensure_configured_family_candidate(metadata=md)
         if explicit is not None:
             return DocumentFamilyResolution(
                 family_id=str(explicit.get("id") or "").strip(),
@@ -73,18 +73,19 @@ class DocumentFamilyResolver:
                 reason="explicit family matched configured candidate",
             )
 
-        for raw_manual in (
-            str(md.get("family_name") or "").strip(),
-            str(md.get("school_name") or "").strip(),
-        ):
-            if raw_manual:
-                return DocumentFamilyResolution(
-                    family_id="",
-                    family_name=raw_manual,
-                    confidence=1.0,
-                    source="manual",
-                    reason="explicit family kept as provided",
-                )
+        if not self.taxonomy.family_candidates:
+            for raw_manual in (
+                str(md.get("family_name") or "").strip(),
+                str(md.get("school_name") or "").strip(),
+            ):
+                if raw_manual:
+                    return DocumentFamilyResolution(
+                        family_id="",
+                        family_name=raw_manual,
+                        confidence=1.0,
+                        source="manual",
+                        reason="explicit family kept as provided",
+                    )
 
         candidates = [dict(item) for item in list(self.taxonomy.family_candidates or []) if isinstance(item, dict)]
         if not candidates:
@@ -280,8 +281,10 @@ class DocumentFamilyResolver:
             "Rules:\n"
             "- Choose ONLY one family_id from family_candidates.\n"
             "- Do not invent new family names.\n"
-            "- Prefer explicit terminology, headings, and method cues over vague topical similarity.\n"
-            "- If the evidence is weak, still pick the closest configured family and lower confidence.\n"
+            "- Prefer explicit modality terminology, headings, and method cues over vague topical similarity.\n"
+            "- Do not choose a family only because the document is generally about the same domain.\n"
+            "- Use aliases/keywords as clues, but resolve conflicts by the dominant therapeutic method or framework described across the batch.\n"
+            "- If the evidence is weak, still pick the closest configured family but lower confidence substantially.\n"
             "Return ONLY strict JSON:\n"
             "{\n"
             '  "family_id": "candidate-id",\n'
@@ -294,13 +297,16 @@ class DocumentFamilyResolver:
             "Return ONLY strict JSON with fields family_id, confidence, reason.\n"
         )
         repaired_payload = f"DATA:\n{json.dumps(payload, ensure_ascii=False)}\n\nDRAFT:\n__DRAFT__"
-        parsed = llm_complete_json(
-            llm=self.llm,
-            system=system,
-            payload=payload,
-            repair_system=repair_system,
-            repair_payload=repaired_payload,
-        )
+        try:
+            parsed = llm_complete_json(
+                llm=self.llm,
+                system=system,
+                payload=payload,
+                repair_system=repair_system,
+                repair_payload=repaired_payload,
+            )
+        except Exception:
+            return None
         obj = maybe_json_dict(parsed)
         family_id = str(obj.get("family_id") or "").strip()
         if not family_id:

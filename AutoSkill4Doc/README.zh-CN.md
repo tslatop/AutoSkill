@@ -37,7 +37,8 @@ document
 - 非 `--quiet` CLI 运行时，会显示单行实时的多阶段进度：抽取阶段展示文档和 window 进度，后续阶段展示 compile 分组和 register 技能进度
 - 抽取阶段遇到限流、短时过载或瞬时网络错误时会做指数退避重试，而不是直接丢掉文档；可用 `--extract-retries` 和 `--extract-retry-backoff-s` 调整
 - 如果某篇文档在重试后仍失败，AutoSkill4Doc 会按文档记录失败并继续处理整批其它文档，而不是整批直接中断
-- 规则负责召回候选标题；在 `section-outline-mode=auto` 且提供了 LLM 时，每篇文档最多做一次 outline 级 LLM 结构分类，用来判断 section / subsection 层级
+- 抽取现在采用两阶段 window 流程：先判断当前 window 实际包含几个独立 skill，再逐个展开详细抽取，避免多个 skill 共用一次响应预算导致后面的 skill 变薄
+- 默认会对每篇文档的候选标题做一次紧凑的 outline 级 LLM 结构分类来判断 section / subsection 层级；规则负责召回候选与兜底。只有显式指定 `section-outline-mode=rule` 时才完全走规则
 - 支持 dry-run 和分阶段执行
 - 支持 provenance/change log/version history
 - 支持生命周期状态：`candidate -> draft -> evaluating -> active -> watchlist -> deprecated -> retired`
@@ -152,7 +153,7 @@ ingest / extract / compile / register 之后中断，重新用相同输入和配
      - 规则先召回可能为标题的行；如果提供了 LLM，AutoSkill4Doc 会对这些候选做一次紧凑的 outline LLM 分类，用来判断章节和子章节层级
      - 超长章节会先预切片，再进入最终 window 规划；默认 `--max-section-chars` 为 `10000`
      - 参考文献 / bibliography 类章节会在抽取前被跳过
-   - `extract` 负责从 window 提取 `SupportRecord + SkillDraft`
+   - `extract` 会先判断一个 window 里有几个独立 skill，再逐个展开成 `SupportRecord + SkillDraft`
    - `compile` 负责把 draft 归一成 `SkillSpec`
    - `register_versions` 会先用带 metadata 的技能文本做 embedding + BM25 hybrid 检索，召回 top-k 相似旧技能，再判断 create / strengthen / revise / merge / split / unchanged，最后做 registry 持久化和版本状态处理
    - 检索语料文本、向量和 BM25 token index 会持久化到 `.runtime/store/document_skill_retrieval.json`，下次运行优先复用
@@ -329,9 +330,10 @@ provider 配置不是文件，而是环境变量。常用项包括：
 - `--max-section-chars`
   - 一个检测到的章节如果过长，会先按这个上限预切片，再构造最终 extraction windows
   - 默认：`10000`
-- `--section-outline-mode auto|off`
-  - `auto`：如果提供了 LLM，对每篇文档的候选标题做一次紧凑的 outline LLM 层级分类；规则负责召回候选和兜底
-  - `off`：完全关闭这层 outline LLM 分类，只使用规则判断
+- `--section-outline-mode llm|rule`
+  - `llm`：默认；对每篇文档的候选标题做一次紧凑的 outline LLM 层级分类；规则只负责召回候选和兜底
+  - `rule`：完全关闭这层 outline LLM 分类，只使用规则判断
+  - 兼容别名：`auto -> llm`，`off -> rule`
 
 ## 流程是否合理
 
