@@ -216,6 +216,16 @@ class CountingExtractor:
         return self.delegate.extract(**kwargs)
 
 
+class CountingCompiler:
+    def __init__(self, delegate) -> None:
+        self.delegate = delegate
+        self.calls = 0
+
+    def compile(self, **kwargs):
+        self.calls += 1
+        return self.delegate.compile(**kwargs)
+
+
 class FailOnceCompiler:
     def __init__(self, delegate) -> None:
         self.delegate = delegate
@@ -1606,6 +1616,64 @@ Always check for acute risk before intensive exploration.
             self.assertEqual(pipeline.document_skill_extractor.calls, 1)
             self.assertTrue(result.intermediate.get("resumed"))
             self.assertGreaterEqual(len(result.registration.skill_specs), 1)
+
+    def test_build_resumes_streamed_register_without_recompiling_processed_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sdk = self._build_sdk(store_path=tmpdir)
+            pipeline = build_default_document_pipeline(sdk=sdk)
+            pipeline.skill_compiler = CountingCompiler(pipeline.skill_compiler)
+            original_register_versions = pipeline.register_versions
+            register_calls = {"count": 0}
+
+            def _interrupting_register_versions(**kwargs):
+                register_calls["count"] += 1
+                if register_calls["count"] == 2:
+                    raise RuntimeError("register interrupted")
+                return original_register_versions(**kwargs)
+
+            pipeline.register_versions = _interrupting_register_versions
+
+            documents = [
+                {
+                    "doc_id": "doc-1",
+                    "title": "Doc One",
+                    "raw_text": _DOC_TEXT,
+                    "source_file": "/tmp/doc-1.md",
+                },
+                {
+                    "doc_id": "doc-2",
+                    "title": "Doc Two",
+                    "raw_text": _DOC_TEXT,
+                    "source_file": "/tmp/doc-2.md",
+                },
+            ]
+
+            with self.assertRaises(RuntimeError):
+                pipeline.build(
+                    data=documents,
+                    title="Resumable Batch",
+                    domain="psychology",
+                    metadata={"channel": "offline_extract_from_doc"},
+                )
+
+            self.assertEqual(pipeline.skill_compiler.calls, 2)
+            self.assertEqual(register_calls["count"], 2)
+
+            pipeline.register_versions = original_register_versions
+            result = pipeline.build(
+                data=documents,
+                title="Resumable Batch",
+                domain="psychology",
+                metadata={"channel": "offline_extract_from_doc"},
+            )
+
+            self.assertEqual(pipeline.skill_compiler.calls, 2)
+            self.assertEqual(register_calls["count"], 2)
+            self.assertTrue(result.intermediate.get("resumed"))
+            compile_docs_dir = os.path.join(result.intermediate["run_dir"], "compile", "documents")
+            register_docs_dir = os.path.join(result.intermediate["run_dir"], "register", "documents")
+            self.assertEqual(2, len([name for name in os.listdir(compile_docs_dir) if name.endswith(".json")]))
+            self.assertEqual(2, len([name for name in os.listdir(register_docs_dir) if name.endswith(".json")]))
 
 
 if __name__ == "__main__":

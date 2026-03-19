@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import os
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from autoskill.utils.time import now_iso
 
@@ -318,6 +318,54 @@ class IntermediateRunWriter:
             },
         )
 
+    def _load_document_stage_payloads(
+        self,
+        *,
+        stage: str,
+        ordered_doc_ids: Optional[Sequence[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Loads persisted per-document payloads for one stage in a stable order."""
+
+        stage_dir = os.path.join(self.run_dir, stage, "documents")
+        if not os.path.isdir(stage_dir):
+            return []
+        by_doc_id: Dict[str, Dict[str, Any]] = {}
+        extras: List[Dict[str, Any]] = []
+        for name in sorted(os.listdir(stage_dir)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(stage_dir, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            doc_id = str(payload.get("doc_id") or "").strip()
+            if doc_id:
+                by_doc_id[doc_id] = payload
+            else:
+                extras.append(payload)
+        ordered: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for doc_id in list(ordered_doc_ids or []):
+            key = str(doc_id or "").strip()
+            if key and key in by_doc_id:
+                ordered.append(by_doc_id[key])
+                seen.add(key)
+        for doc_id in sorted(by_doc_id):
+            if doc_id in seen:
+                continue
+            ordered.append(by_doc_id[doc_id])
+        ordered.extend(extras)
+        return ordered
+
+    def iter_extract_documents(self, *, ordered_doc_ids: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
+        """Returns persisted per-document extract payloads."""
+
+        return self._load_document_stage_payloads(stage="extract", ordered_doc_ids=ordered_doc_ids)
+
     def load_ingest(self) -> "DocumentIngestResult":
         """Loads the completed ingest snapshot."""
 
@@ -449,6 +497,55 @@ class IntermediateRunWriter:
             extractor_name="llm",
         )
 
+    def load_extract_summary(self) -> "SkillExtractionResult":
+        """Loads only lightweight extract metadata without materializing all supports/drafts."""
+
+        from ..stages.extractor import SkillExtractionResult
+
+        documents: List[DocumentRecord] = []
+        windows: List[StrictWindow] = []
+        errors: List[Dict[str, Any]] = []
+        aggregate_path = os.path.join(self.run_dir, "extract", "result.json")
+        if os.path.isfile(aggregate_path):
+            try:
+                with open(aggregate_path, "r", encoding="utf-8") as f:
+                    aggregate = json.load(f)
+                if isinstance(aggregate, dict):
+                    documents = [
+                        DocumentRecord.from_dict(item)
+                        for item in list(aggregate.get("documents") or [])
+                        if isinstance(item, dict)
+                    ]
+                    windows = [
+                        StrictWindow.from_dict(item)
+                        for item in list(aggregate.get("windows") or [])
+                        if isinstance(item, dict)
+                    ]
+                    errors.extend(
+                        [{"stage": "intermediate_extract_result_load", **item} for item in list(aggregate.get("errors") or []) if isinstance(item, dict)]
+                    )
+            except Exception as exc:
+                errors.append({"stage": "intermediate_extract_result_load", "path": aggregate_path, "error": str(exc)})
+        if not documents or not windows:
+            ingest_loaded = self.load_ingest()
+            documents = list(ingest_loaded.documents or [])
+            windows = list(ingest_loaded.windows or [])
+            errors.extend(list(ingest_loaded.errors or []))
+        for payload in self.iter_extract_documents():
+            if isinstance(payload.get("error"), dict):
+                errors.append(dict(payload.get("error") or {}))
+        deduped = {
+            _extract_error_key(dict(item or {})): dict(item or {})
+            for item in errors
+            if isinstance(item, dict)
+        }
+        return SkillExtractionResult(
+            documents=documents,
+            windows=windows,
+            errors=[{"stage": "intermediate_extract_load", **item} for item in deduped.values()],
+            extractor_name="llm",
+        )
+
     def processed_extract_doc_ids(self) -> List[str]:
         """Returns document ids with successful per-document extract snapshots."""
 
@@ -471,6 +568,55 @@ class IntermediateRunWriter:
             if doc_id:
                 out.append(doc_id)
         return out
+
+    def write_compile_progress(
+        self,
+        *,
+        record: DocumentRecord,
+        result: "SkillCompilationResult",
+        total_documents: int,
+        processed_documents: int,
+        group_count: int,
+        skipped: bool = False,
+    ) -> None:
+        """Writes one per-document compile snapshot."""
+
+        payload = {
+            "doc_id": record.doc_id,
+            "title": record.title,
+            "source_file": str((record.metadata or {}).get("source_file") or ""),
+            "support_records": [support.to_dict() for support in list(result.support_records or [])],
+            "skill_drafts": [draft.to_dict() for draft in list(result.skill_drafts or [])],
+            "skill_specs": [skill.to_dict() for skill in list(result.skill_specs or [])],
+            "errors": list(result.errors or []),
+            "group_count": int(group_count or 0),
+            "processed_documents": int(processed_documents or 0),
+            "total_documents": int(total_documents or 0),
+            "skipped": bool(skipped),
+        }
+        doc_name = safe_dir_component(str(record.doc_id or "").strip() or "document")
+        self._write_json(f"compile/documents/{doc_name}.json", payload)
+        self._set_stage(
+            stage="compile_running",
+            counts={
+                "compile_processed_documents": int(processed_documents or 0),
+                "compile_total_documents": int(total_documents or 0),
+            },
+        )
+
+    def iter_compile_documents(self, *, ordered_doc_ids: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
+        """Returns persisted per-document compile payloads."""
+
+        return self._load_document_stage_payloads(stage="compile", ordered_doc_ids=ordered_doc_ids)
+
+    def processed_compile_doc_ids(self) -> List[str]:
+        """Returns document ids with persisted per-document compile snapshots."""
+
+        return [
+            str(payload.get("doc_id") or "").strip()
+            for payload in self.iter_compile_documents()
+            if str(payload.get("doc_id") or "").strip()
+        ]
 
     def write_compile(self, result: "SkillCompilationResult") -> None:
         """Writes the completed compile snapshot."""
@@ -504,7 +650,35 @@ class IntermediateRunWriter:
         skill_specs: List[SkillSpec] = []
         errors: List[Dict[str, Any]] = []
         if not os.path.isfile(path):
-            return SkillCompilationResult(errors=[{"stage": "intermediate_compile_load", "error": "compile snapshot not found"}])
+            payloads = self.iter_compile_documents()
+            if not payloads:
+                return SkillCompilationResult(errors=[{"stage": "intermediate_compile_load", "error": "compile snapshot not found"}])
+            for payload in payloads:
+                support_records.extend(
+                    [SupportRecord.from_dict(item) for item in list(payload.get("support_records") or []) if isinstance(item, dict)]
+                )
+                skill_drafts.extend(
+                    [SkillDraft.from_dict(item) for item in list(payload.get("skill_drafts") or []) if isinstance(item, dict)]
+                )
+                skill_specs.extend(
+                    [SkillSpec.from_dict(item) for item in list(payload.get("skill_specs") or []) if isinstance(item, dict)]
+                )
+                errors.extend(
+                    [
+                        {"stage": "intermediate_compile_load", **item}
+                        for item in list(payload.get("errors") or [])
+                        if isinstance(item, dict)
+                    ]
+                )
+            support_by_id = {item.support_id: item for item in support_records}
+            draft_by_id = {item.draft_id: item for item in skill_drafts}
+            return SkillCompilationResult(
+                support_records=list(support_by_id.values()),
+                skill_drafts=list(draft_by_id.values()),
+                skill_specs=skill_specs,
+                errors=errors,
+                compiler_name="llm",
+            )
         try:
             with open(path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
@@ -522,6 +696,92 @@ class IntermediateRunWriter:
             errors=errors,
             compiler_name="llm",
         )
+
+    def load_compile_summary(self) -> "SkillCompilationResult":
+        """Loads only lightweight compile metadata without materializing all supports/specs."""
+
+        from ..stages.compiler import SkillCompilationResult
+
+        path = os.path.join(self.run_dir, "compile", "result.json")
+        errors: List[Dict[str, Any]] = []
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    errors.extend(
+                        [{"stage": "intermediate_compile_load", **item} for item in list(payload.get("errors") or []) if isinstance(item, dict)]
+                    )
+            except Exception as exc:
+                errors.append({"stage": "intermediate_compile_load", "path": path, "error": str(exc)})
+        else:
+            for payload in self.iter_compile_documents():
+                errors.extend(
+                    [
+                        {"stage": "intermediate_compile_load", **item}
+                        for item in list(payload.get("errors") or [])
+                        if isinstance(item, dict)
+                    ]
+                )
+        return SkillCompilationResult(errors=errors, compiler_name="llm")
+
+    def write_registration_progress(
+        self,
+        *,
+        record: DocumentRecord,
+        result: "VersionRegistrationResult",
+        total_documents: int,
+        processed_documents: int,
+        action_counts: Optional[Dict[str, int]] = None,
+        skipped: bool = False,
+    ) -> None:
+        """Writes one per-document registration snapshot."""
+
+        payload = {
+            "doc_id": record.doc_id,
+            "title": record.title,
+            "source_file": str((record.metadata or {}).get("source_file") or ""),
+            "documents": [doc.to_dict() for doc in list(result.documents or [])],
+            "support_records": [support.to_dict() for support in list(result.support_records or [])],
+            "skill_specs": [skill.to_dict() for skill in list(result.skill_specs or [])],
+            "hierarchy_updates": [skill.to_dict() for skill in list(result.hierarchy_updates or [])],
+            "lifecycles": [item.to_dict() for item in list(result.lifecycles or [])],
+            "change_logs": list(result.change_logs or []),
+            "version_history": list(result.version_history or []),
+            "provenance_links": list(result.provenance_links or []),
+            "upserted_store_skills": list(result.upserted_store_skills or []),
+            "staging_runs": list(result.staging_runs or []),
+            "visible_tree": dict(result.visible_tree or {}),
+            "errors": list(result.errors or []),
+            "dry_run": bool(result.dry_run),
+            "processed_documents": int(processed_documents or 0),
+            "total_documents": int(total_documents or 0),
+            "action_counts": {str(key): int(value or 0) for key, value in dict(action_counts or {}).items()},
+            "skipped": bool(skipped),
+        }
+        doc_name = safe_dir_component(str(record.doc_id or "").strip() or "document")
+        self._write_json(f"register/documents/{doc_name}.json", payload)
+        self._set_stage(
+            stage="register_running",
+            counts={
+                "register_processed_documents": int(processed_documents or 0),
+                "register_total_documents": int(total_documents or 0),
+            },
+        )
+
+    def iter_register_documents(self, *, ordered_doc_ids: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
+        """Returns persisted per-document register payloads."""
+
+        return self._load_document_stage_payloads(stage="register", ordered_doc_ids=ordered_doc_ids)
+
+    def processed_register_doc_ids(self) -> List[str]:
+        """Returns document ids with persisted per-document registration snapshots."""
+
+        return [
+            str(payload.get("doc_id") or "").strip()
+            for payload in self.iter_register_documents()
+            if str(payload.get("doc_id") or "").strip()
+        ]
 
     def write_registration(self, result: "VersionRegistrationResult") -> None:
         """Writes the completed registration snapshot."""
@@ -576,7 +836,86 @@ class IntermediateRunWriter:
         errors: List[Dict[str, Any]] = []
         dry_run = False
         if not os.path.isfile(path):
-            return VersionRegistrationResult(errors=[{"stage": "intermediate_register_load", "error": "register snapshot not found"}])
+            payloads = self.iter_register_documents()
+            if not payloads:
+                return VersionRegistrationResult(errors=[{"stage": "intermediate_register_load", "error": "register snapshot not found"}])
+            document_by_id: Dict[str, DocumentRecord] = {}
+            support_by_id: Dict[str, SupportRecord] = {}
+            skill_by_id: Dict[str, SkillSpec] = {}
+            hierarchy_by_id: Dict[str, SkillSpec] = {}
+            upserted_by_id: Dict[str, Dict[str, Any]] = {}
+            visible_lists = {"affected_families": set(), "parent_paths": set(), "child_paths": set()}
+            for payload in payloads:
+                for item in list(payload.get("documents") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    document = DocumentRecord.from_dict(item)
+                    document_by_id[document.doc_id] = document
+                for item in list(payload.get("support_records") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    support = SupportRecord.from_dict(item)
+                    support_by_id[support.support_id] = support
+                for item in list(payload.get("skill_specs") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    skill = SkillSpec.from_dict(item)
+                    skill_by_id[skill.skill_id] = skill
+                for item in list(payload.get("hierarchy_updates") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    skill = SkillSpec.from_dict(item)
+                    hierarchy_by_id[skill.skill_id] = skill
+                lifecycles.extend(
+                    [SkillLifecycle.from_dict(item) for item in list(payload.get("lifecycles") or []) if isinstance(item, dict)]
+                )
+                change_logs.extend([dict(item) for item in list(payload.get("change_logs") or []) if isinstance(item, dict)])
+                version_history.extend([dict(item) for item in list(payload.get("version_history") or []) if isinstance(item, dict)])
+                provenance_links.extend([dict(item) for item in list(payload.get("provenance_links") or []) if isinstance(item, dict)])
+                for item in list(payload.get("upserted_store_skills") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = str(item.get("id") or "").strip()
+                    if item_id:
+                        upserted_by_id[item_id] = dict(item)
+                    else:
+                        upserted_store_skills.append(dict(item))
+                staging_runs.extend([dict(item) for item in list(payload.get("staging_runs") or []) if isinstance(item, dict)])
+                tree = dict(payload.get("visible_tree") or {})
+                if str(tree.get("store_root") or "").strip():
+                    visible_tree["store_root"] = str(tree.get("store_root") or "").strip()
+                if str(tree.get("library_manifest_path") or "").strip():
+                    visible_tree["library_manifest_path"] = str(tree.get("library_manifest_path") or "").strip()
+                if str(tree.get("readme_path") or "").strip():
+                    visible_tree["readme_path"] = str(tree.get("readme_path") or "").strip()
+                for key in ("affected_families", "parent_paths", "child_paths"):
+                    visible_lists[key].update(str(item or "").strip() for item in list(tree.get(key) or []) if str(item or "").strip())
+                errors.extend(
+                    [
+                        {"stage": "intermediate_register_load", **item}
+                        for item in list(payload.get("errors") or [])
+                        if isinstance(item, dict)
+                    ]
+                )
+                dry_run = dry_run or bool(payload.get("dry_run"))
+            for key, values in visible_lists.items():
+                visible_tree[key] = sorted(values)
+            upserted_store_skills.extend(list(upserted_by_id.values()))
+            return VersionRegistrationResult(
+                documents=list(document_by_id.values()),
+                support_records=list(support_by_id.values()),
+                skill_specs=list(skill_by_id.values()),
+                hierarchy_updates=list(hierarchy_by_id.values()),
+                lifecycles=lifecycles,
+                change_logs=change_logs,
+                version_history=version_history,
+                provenance_links=provenance_links,
+                upserted_store_skills=upserted_store_skills,
+                staging_runs=staging_runs,
+                visible_tree=visible_tree,
+                errors=errors,
+                dry_run=dry_run,
+            )
         try:
             with open(path, "r", encoding="utf-8") as f:
                 payload = json.load(f)

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from autoskill import AutoSkill
 
-from .core.common import StageLogger, compact_metadata
+from .core.common import StageLogger, compact_metadata, emit_stage_progress
 from .core.config import (
     DEFAULT_DOC_SKILL_USER_ID,
     DEFAULT_EXTRACT_STRATEGY,
@@ -33,6 +33,7 @@ from .core.provider_config import allow_mock_provider, ensure_runtime_llm_provid
 from .stages.compiler import (
     SkillCompilationResult,
     SkillCompiler,
+    _group_key_for_draft,
     build_skill_compiler,
     compile_skills,
 )
@@ -544,7 +545,9 @@ class DocumentBuildPipeline:
             except Exception:
                 pass
         try:
-            if intermediate_writer is not None:
+            if intermediate_writer is not None and intermediate_writer.has_completed_stage("extract"):
+                extracted_result = intermediate_writer.load_extract_summary()
+            elif intermediate_writer is not None:
                 extracted_result = self._resume_or_extract(
                     intermediate_writer=intermediate_writer,
                     ingest_result=ingest_result,
@@ -564,33 +567,62 @@ class DocumentBuildPipeline:
                     stage_progress_callback=stage_progress_callback,
                 )
             if intermediate_writer is not None and intermediate_writer.has_completed_stage("compile"):
-                compiled_result = intermediate_writer.load_compile()
+                compiled_result = intermediate_writer.load_compile_summary()
             else:
-                compiled_result = self.compile_skills(
-                    skill_drafts=extracted_result.skill_drafts,
-                    support_records=extracted_result.support_records,
-                    target_state=effective_state,
-                    progress_callback=stage_progress_callback,
-                )
                 if intermediate_writer is not None:
-                    intermediate_writer.write_compile(compiled_result)
-                    intermediate_summary = intermediate_writer.summary().to_dict()
+                    compiled_result = self._resume_or_stream_compile(
+                        intermediate_writer=intermediate_writer,
+                        ingest_result=ingest_result,
+                        target_state=effective_state,
+                        stage_progress_callback=stage_progress_callback,
+                    )
+                else:
+                    compiled_result = self.compile_skills(
+                        skill_drafts=extracted_result.skill_drafts,
+                        support_records=extracted_result.support_records,
+                        target_state=effective_state,
+                        progress_callback=stage_progress_callback,
+                    )
+            if intermediate_writer is not None:
+                extracted_result = SkillExtractionResult(
+                    documents=list(ingest_result.documents or []),
+                    windows=list(ingest_result.windows or []),
+                    errors=list(extracted_result.errors or []),
+                    extractor_name=str(extracted_result.extractor_name or "llm"),
+                )
+                compiled_result = SkillCompilationResult(
+                    errors=list(compiled_result.errors or []),
+                    compiler_name=str(compiled_result.compiler_name or "llm"),
+                )
             if intermediate_writer is not None and intermediate_writer.has_completed_stage("register"):
                 registration_result = intermediate_writer.load_registration()
             else:
-                registration_result = self.register_versions(
-                    documents=ingest_result.documents,
-                    support_records=compiled_result.support_records,
-                    skill_specs=compiled_result.skill_specs,
-                    user_id=user_id,
-                    metadata=resolved_metadata,
-                    dry_run=dry_run,
-                    target_state=effective_state,
-                    progress_callback=stage_progress_callback,
-                )
                 if intermediate_writer is not None:
-                    intermediate_writer.write_registration(registration_result)
-                    intermediate_summary = intermediate_writer.summary().to_dict()
+                    registration_result = self._resume_or_stream_register(
+                        intermediate_writer=intermediate_writer,
+                        ingest_result=ingest_result,
+                        user_id=user_id,
+                        metadata=resolved_metadata,
+                        dry_run=dry_run,
+                        target_state=effective_state,
+                        stage_progress_callback=stage_progress_callback,
+                    )
+                else:
+                    registration_result = self.register_versions(
+                        documents=ingest_result.documents,
+                        support_records=compiled_result.support_records,
+                        skill_specs=compiled_result.skill_specs,
+                        user_id=user_id,
+                        metadata=resolved_metadata,
+                        dry_run=dry_run,
+                        target_state=effective_state,
+                        progress_callback=stage_progress_callback,
+                    )
+            if intermediate_writer is not None:
+                extracted_result = intermediate_writer.load_extract()
+                compiled_result = intermediate_writer.load_compile()
+                registration_result = intermediate_writer.load_registration()
+                intermediate_summary = intermediate_writer.summary().to_dict()
             build_result = DocumentBuildResult(
                 ingest=ingest_result,
                 extracted=extracted_result,
@@ -746,6 +778,248 @@ class DocumentBuildPipeline:
         )
         if extract_progress_callback is not None:
             extract_progress_callback(record, supports, drafts, cumulative)
+
+    def _resume_or_stream_compile(
+        self,
+        *,
+        intermediate_writer: IntermediateRunWriter,
+        ingest_result: DocumentIngestResult,
+        target_state: VersionState,
+        stage_progress_callback=None,
+    ) -> SkillCompilationResult:
+        """Compiles per-document extract snapshots sequentially to keep memory bounded."""
+
+        if intermediate_writer.has_completed_stage("compile"):
+            loaded = intermediate_writer.load_compile()
+            return SkillCompilationResult(errors=list(loaded.errors or []), compiler_name=loaded.compiler_name)
+        ordered_doc_ids = [str(doc.doc_id or "").strip() for doc in list(ingest_result.documents or [])]
+        documents_by_id = {str(doc.doc_id or "").strip(): doc for doc in list(ingest_result.documents or [])}
+        extract_payloads = intermediate_writer.iter_extract_documents(ordered_doc_ids=ordered_doc_ids)
+        existing_compile_payloads = intermediate_writer.iter_compile_documents(ordered_doc_ids=ordered_doc_ids)
+        processed_doc_ids = {str(item.get("doc_id") or "").strip() for item in existing_compile_payloads if str(item.get("doc_id") or "").strip()}
+        completed_groups = sum(int(item.get("group_count") or 0) for item in existing_compile_payloads)
+        completed_skills = sum(len(list(item.get("skill_specs") or [])) for item in existing_compile_payloads)
+        completed_errors = sum(len(list(item.get("errors") or [])) for item in existing_compile_payloads)
+        total_groups = 0
+        for payload in extract_payloads:
+            if bool(payload.get("failed")):
+                continue
+            drafts = [
+                SkillDraft.from_dict(item)
+                for item in list(payload.get("skill_drafts") or [])
+                if isinstance(item, dict)
+            ]
+            total_groups += len({_group_key_for_draft(draft) for draft in drafts})
+        emit_stage_progress(
+            stage_progress_callback,
+            {
+                "stage": "compile",
+                "kind": "start",
+                "total_groups": total_groups,
+                "completed_groups": completed_groups,
+                "total_skills": completed_skills,
+                "errors": completed_errors,
+            },
+        )
+        processed_documents = len(processed_doc_ids)
+        total_documents = len(list(ingest_result.documents or []))
+        for doc_id in ordered_doc_ids:
+            if doc_id in processed_doc_ids:
+                continue
+            record = documents_by_id.get(doc_id)
+            if record is None:
+                continue
+            payload = next((item for item in extract_payloads if str(item.get("doc_id") or "").strip() == doc_id), {})
+            if bool(payload.get("failed")):
+                intermediate_writer.write_compile_progress(
+                    record=record,
+                    result=SkillCompilationResult(errors=[dict(payload.get("error") or {})]),
+                    total_documents=total_documents,
+                    processed_documents=processed_documents + 1,
+                    group_count=0,
+                    skipped=True,
+                )
+                processed_documents += 1
+                continue
+            doc_supports = [
+                SupportRecord.from_dict(item)
+                for item in list(payload.get("supports") or [])
+                if isinstance(item, dict)
+            ]
+            doc_drafts = [
+                SkillDraft.from_dict(item)
+                for item in list(payload.get("skill_drafts") or [])
+                if isinstance(item, dict)
+            ]
+            group_count = len({_group_key_for_draft(draft) for draft in doc_drafts})
+            local_completed_groups = completed_groups
+            local_completed_skills = completed_skills
+            local_errors = completed_errors
+
+            def _compile_progress(event: Dict[str, Any]) -> None:
+                wrapped = dict(event or {})
+                if str(wrapped.get("stage") or "").strip().lower() != "compile":
+                    if stage_progress_callback is not None:
+                        stage_progress_callback(wrapped)
+                    return
+                wrapped["total_groups"] = total_groups
+                wrapped["completed_groups"] = min(
+                    total_groups,
+                    local_completed_groups + int(wrapped.get("completed_groups") or 0),
+                )
+                wrapped["total_skills"] = local_completed_skills + int(wrapped.get("total_skills") or 0)
+                wrapped["errors"] = local_errors + int(wrapped.get("errors") or 0)
+                if stage_progress_callback is not None:
+                    stage_progress_callback(wrapped)
+
+            compiled = self.compile_skills(
+                skill_drafts=doc_drafts,
+                support_records=doc_supports,
+                target_state=target_state,
+                progress_callback=_compile_progress,
+            )
+            intermediate_writer.write_compile_progress(
+                record=record,
+                result=compiled,
+                total_documents=total_documents,
+                processed_documents=processed_documents + 1,
+                group_count=group_count,
+            )
+            completed_groups += group_count
+            completed_skills += len(list(compiled.skill_specs or []))
+            completed_errors += len(list(compiled.errors or []))
+            processed_documents += 1
+        aggregate = intermediate_writer.load_compile()
+        intermediate_writer.write_compile(aggregate)
+        return SkillCompilationResult(errors=list(aggregate.errors or []), compiler_name=aggregate.compiler_name)
+
+    def _resume_or_stream_register(
+        self,
+        *,
+        intermediate_writer: IntermediateRunWriter,
+        ingest_result: DocumentIngestResult,
+        user_id: str,
+        metadata: Optional[Dict[str, Any]],
+        dry_run: bool,
+        target_state: VersionState,
+        stage_progress_callback=None,
+    ) -> VersionRegistrationResult:
+        """Registers per-document compiled snapshots sequentially to keep memory bounded."""
+
+        if intermediate_writer.has_completed_stage("register"):
+            loaded = intermediate_writer.load_registration()
+            return VersionRegistrationResult(
+                visible_tree=dict(loaded.visible_tree or {}),
+                upserted_store_skills=list(loaded.upserted_store_skills or []),
+                staging_runs=list(loaded.staging_runs or []),
+                errors=list(loaded.errors or []),
+                dry_run=bool(loaded.dry_run),
+            )
+        ordered_doc_ids = [str(doc.doc_id or "").strip() for doc in list(ingest_result.documents or [])]
+        documents_by_id = {str(doc.doc_id or "").strip(): doc for doc in list(ingest_result.documents or [])}
+        compile_payloads = intermediate_writer.iter_compile_documents(ordered_doc_ids=ordered_doc_ids)
+        existing_register_payloads = intermediate_writer.iter_register_documents(ordered_doc_ids=ordered_doc_ids)
+        processed_doc_ids = {str(item.get("doc_id") or "").strip() for item in existing_register_payloads if str(item.get("doc_id") or "").strip()}
+        completed_skills = sum(len(list(item.get("skill_specs") or [])) for item in existing_register_payloads)
+        total_skills = sum(len(list(item.get("skill_specs") or [])) for item in compile_payloads if not bool(item.get("skipped")))
+        completed_errors = sum(len(list(item.get("errors") or [])) for item in existing_register_payloads)
+        total_documents = len(list(ingest_result.documents or []))
+        processed_documents = len(processed_doc_ids)
+        emit_stage_progress(
+            stage_progress_callback,
+            {
+                "stage": "register",
+                "kind": "start",
+                "phase": "reconcile",
+                "completed_skills": completed_skills,
+                "total_skills": total_skills,
+                "errors": completed_errors,
+            },
+        )
+        for doc_id in ordered_doc_ids:
+            if doc_id in processed_doc_ids:
+                continue
+            record = documents_by_id.get(doc_id)
+            if record is None:
+                continue
+            payload = next((item for item in compile_payloads if str(item.get("doc_id") or "").strip() == doc_id), {})
+            if bool(payload.get("skipped")):
+                intermediate_writer.write_registration_progress(
+                    record=record,
+                    result=VersionRegistrationResult(
+                        documents=[record],
+                        errors=[{"stage": "register_skipped", **dict(item)} for item in list(payload.get("errors") or []) if isinstance(item, dict)],
+                        dry_run=bool(dry_run),
+                    ),
+                    total_documents=total_documents,
+                    processed_documents=processed_documents + 1,
+                    action_counts={},
+                    skipped=True,
+                )
+                processed_documents += 1
+                continue
+            doc_supports = [
+                SupportRecord.from_dict(item)
+                for item in list(payload.get("support_records") or [])
+                if isinstance(item, dict)
+            ]
+            doc_specs = [
+                SkillSpec.from_dict(item)
+                for item in list(payload.get("skill_specs") or [])
+                if isinstance(item, dict)
+            ]
+            base_completed = completed_skills
+            base_errors = completed_errors
+            action_counts: Dict[str, int] = {}
+
+            def _register_progress(event: Dict[str, Any]) -> None:
+                wrapped = dict(event or {})
+                if str(wrapped.get("stage") or "").strip().lower() != "register":
+                    if stage_progress_callback is not None:
+                        stage_progress_callback(wrapped)
+                    return
+                if "completed_skills" in wrapped:
+                    wrapped["completed_skills"] = min(
+                        total_skills,
+                        base_completed + int(wrapped.get("completed_skills") or 0),
+                    )
+                wrapped["total_skills"] = total_skills
+                wrapped["errors"] = base_errors + int(wrapped.get("errors") or 0)
+                action = str(wrapped.get("action") or "").strip()
+                if action:
+                    action_counts[action] = int(action_counts.get(action) or 0) + 1
+                if stage_progress_callback is not None:
+                    stage_progress_callback(wrapped)
+
+            registered = self.register_versions(
+                documents=[record],
+                support_records=doc_supports,
+                skill_specs=doc_specs,
+                user_id=user_id,
+                metadata=metadata,
+                dry_run=dry_run,
+                target_state=target_state,
+                progress_callback=_register_progress,
+            )
+            intermediate_writer.write_registration_progress(
+                record=record,
+                result=registered,
+                total_documents=total_documents,
+                processed_documents=processed_documents + 1,
+                action_counts=action_counts,
+            )
+            completed_skills += len(list(doc_specs or []))
+            completed_errors += len(list(registered.errors or []))
+            processed_documents += 1
+        aggregate = intermediate_writer.load_registration()
+        intermediate_writer.write_registration(aggregate)
+        return VersionRegistrationResult(
+            visible_tree=dict(aggregate.visible_tree or {}),
+            upserted_store_skills=list(aggregate.upserted_store_skills or []),
+            staging_runs=list(aggregate.staging_runs or []),
+            errors=list(aggregate.errors or []),
+            dry_run=bool(aggregate.dry_run),
+        )
 
 
 def build_default_document_pipeline(
