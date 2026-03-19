@@ -71,10 +71,8 @@ def _version_llm_response(*, system: str | None, user: str, temperature: float =
         target_steps = list(target.get("workflow_steps") or [])
         candidate_constraints = list(candidate.get("constraints") or [])
         target_constraints = list(target.get("constraints") or [])
-        has_conflict_support = any(
-            item.get("relation_type") == "conflict"
-            for item in list(candidate.get("support_excerpt_summaries") or [])
-        )
+        support_summary = dict(candidate.get("support_summary") or {})
+        has_conflict_support = int(support_summary.get("conflict_count") or 0) > 0
         if has_conflict_support:
             action = "create"
         elif candidate_steps == target_steps and candidate_constraints == target_constraints:
@@ -312,6 +310,165 @@ class DocumentVersioningTest(unittest.TestCase):
 
             self.assertEqual(decision.get("decision"), "defer")
             self.assertEqual(decision.get("parent_skill_id"), "")
+
+    def test_classify_change_omits_peer_candidates_without_split_signal(self) -> None:
+        manager = VersionManager(registry=DocumentRegistry(root_dir="/tmp/non-persistent"), llm=self._llm())
+        support = self._support(support_id="sup-limit", doc_id="doc-limit", excerpt="Build rapport first.")
+        skill = self._skill(
+            skill_id="cand-limit",
+            name="intake candidate",
+            workflow_steps=["Build rapport first."],
+            support_ids=[support.support_id],
+        )
+        peers = [
+            self._skill(
+                skill_id=f"peer-{idx}",
+                name=f"peer {idx}",
+                workflow_steps=[f"step {idx}"],
+                support_ids=[support.support_id],
+            )
+            for idx in range(5)
+        ]
+
+        captured: dict[str, object] = {}
+
+        class CaptureLLM:
+            def complete(self, *, system=None, user="", temperature=0.0):
+                captured["payload"] = json.loads(user)
+                return json.dumps({"action": "create", "reason": "create"}, ensure_ascii=False)
+
+        manager.llm = CaptureLLM()
+        decision = manager.classify_change(
+            skill,
+            peer_skills=peers,
+            existing_skills=[],
+            support_by_id={support.support_id: support},
+        )
+
+        self.assertEqual(decision.action, "create")
+        self.assertNotIn("peer_candidates", dict(captured.get("payload") or {}))
+
+    def test_classify_change_hits_zero_uses_compact_create_discard_prompt(self) -> None:
+        manager = VersionManager(registry=DocumentRegistry(root_dir="/tmp/non-persistent"), llm=self._llm())
+        support = self._support(support_id="sup-create", doc_id="doc-create", excerpt="Build rapport first.")
+        skill = self._skill(
+            skill_id="cand-create",
+            name="intake candidate",
+            workflow_steps=["Build rapport first."],
+            support_ids=[support.support_id],
+        )
+
+        captured: dict[str, object] = {}
+
+        class CaptureLLM:
+            def complete(self, *, system=None, user="", temperature=0.0):
+                captured["system"] = system
+                captured["payload"] = json.loads(user)
+                return json.dumps({"action": "create", "reason": "create"}, ensure_ascii=False)
+
+        manager.llm = CaptureLLM()
+        decision = manager.classify_change(
+            skill,
+            peer_skills=[],
+            existing_skills=[],
+            support_by_id={support.support_id: support},
+        )
+
+        self.assertEqual(decision.action, "create")
+        self.assertIn("created or discarded", str(captured.get("system") or ""))
+        self.assertNotIn("existing_skills", dict(captured.get("payload") or {}))
+        self.assertNotIn("peer_candidates", dict(captured.get("payload") or {}))
+
+    def test_classify_change_includes_single_peer_candidate_for_split_signal(self) -> None:
+        manager = VersionManager(registry=DocumentRegistry(root_dir="/tmp/non-persistent"), llm=self._llm())
+        support = self._support(support_id="sup-split", doc_id="doc-split", excerpt="Build rapport first.")
+        child = self._skill(
+            skill_id="cand-child",
+            name="rapport building / intake",
+            asset_type="session_skill",
+            granularity="session",
+            objective="Establish rapport during intake.",
+            workflow_steps=["Build rapport first."],
+            support_ids=[support.support_id],
+            asset_level=2,
+        )
+        peer = self._skill(
+            skill_id="peer-child",
+            name="intake risk screening",
+            asset_type="session_skill",
+            granularity="session",
+            objective="Assess acute risk during intake.",
+            workflow_steps=["Assess acute risk."],
+            support_ids=[support.support_id],
+            asset_level=2,
+        )
+        parent = self._skill(
+            skill_id="existing-parent",
+            name="intake workflow",
+            asset_type="macro_protocol",
+            granularity="macro",
+            objective="Run the full intake protocol.",
+            workflow_steps=["Build rapport first.", "Assess acute risk.", "Set an agenda."],
+            support_ids=[support.support_id],
+            asset_level=1,
+        )
+
+        captured: dict[str, object] = {}
+
+        class CaptureLLM:
+            def complete(self, *, system=None, user="", temperature=0.0):
+                captured["payload"] = json.loads(user)
+                return json.dumps({"action": "create", "reason": "create"}, ensure_ascii=False)
+
+        manager.llm = CaptureLLM()
+        decision = manager.classify_change(
+            child,
+            peer_skills=[peer],
+            existing_skills=[parent],
+            support_by_id={support.support_id: support},
+        )
+
+        self.assertEqual(decision.action, "create")
+        self.assertEqual(len(list((captured.get("payload") or {}).get("peer_candidates") or [])), 1)
+
+    def test_classify_change_invalid_merge_target_falls_back_to_create(self) -> None:
+        manager = VersionManager(registry=DocumentRegistry(root_dir="/tmp/non-persistent"), llm=self._llm())
+        support = self._support(support_id="sup-merge", doc_id="doc-merge", excerpt="Build rapport first.")
+        skill = self._skill(
+            skill_id="cand-merge",
+            name="intake candidate",
+            workflow_steps=["Build rapport first."],
+            support_ids=[support.support_id],
+        )
+        existing = self._skill(
+            skill_id="existing-1",
+            name="existing intake",
+            workflow_steps=["Build rapport first."],
+            support_ids=[support.support_id],
+        )
+
+        class CaptureLLM:
+            def complete(self, *, system=None, user="", temperature=0.0):
+                _ = system, user, temperature
+                return json.dumps(
+                    {
+                        "action": "merge",
+                        "target_skill_ids": ["missing-existing-id"],
+                        "reason": "merge",
+                    },
+                    ensure_ascii=False,
+                )
+
+        manager.llm = CaptureLLM()
+        decision = manager.classify_change(
+            skill,
+            peer_skills=[],
+            existing_skills=[existing],
+            support_by_id={support.support_id: support},
+        )
+
+        self.assertEqual(decision.action, "create")
+        self.assertEqual(decision.matched_skill_ids, [])
 
     def test_same_skill_strengthens_existing_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -570,6 +727,36 @@ class DocumentVersioningTest(unittest.TestCase):
             self.assertTrue(entry.get("text"))
             self.assertTrue(entry.get("tokens"))
             self.assertTrue(entry.get("vector"))
+
+    def test_document_retriever_invalidates_cached_vectors_when_embedding_config_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            matching = self._skill(
+                skill_id="match",
+                name="认知重评会谈流程",
+                objective="Run an agenda-based CBT cognitive reframing session.",
+                workflow_steps=["建立议程。", "识别自动思维。", "进行重评。"],
+                support_ids=["sup-match"],
+                method_family="cbt",
+            )
+            matching.metadata["family_name"] = "认知行为疗法"
+            matching.metadata["domain_type"] = "psychology"
+
+            retriever64 = build_document_skill_retriever(
+                embeddings_config={"provider": "hashing", "dims": 64},
+                bm25_weight=0.1,
+                base_store_root=tmpdir,
+            )
+            retriever64.refresh([matching])
+            self.assertEqual(64, len(retriever64._vectors["match"]))
+
+            retriever16 = build_document_skill_retriever(
+                embeddings_config={"provider": "hashing", "dims": 16},
+                bm25_weight=0.1,
+                base_store_root=tmpdir,
+            )
+            self.assertEqual({}, retriever16._vectors)
+            retriever16.refresh([matching])
+            self.assertEqual(16, len(retriever16._vectors["match"]))
 
     def test_register_versions_retrieves_relevant_existing_skill_beyond_registry_slice(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

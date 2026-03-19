@@ -229,6 +229,27 @@ def _plausible_parent_candidate(child: SkillSpec, parent: SkillSpec, *, score: f
     return len(child_tokens & parent_tokens) >= 2
 
 
+def _needs_peer_context(
+    skill: SkillSpec,
+    *,
+    peer_skills: Sequence[SkillSpec],
+    existing_skills: Sequence[SkillSpec],
+) -> bool:
+    """Returns whether classify_change() should include same-batch peers."""
+
+    if not peer_skills or not existing_skills:
+        return False
+    child_rank = _granularity_rank(skill.granularity)
+    child_level = int(skill.asset_level or 0)
+    for existing in existing_skills or []:
+        if _granularity_rank(existing.granularity) < child_rank:
+            return True
+        existing_level = int(existing.asset_level or 0)
+        if child_level > 0 and existing_level > 0 and existing_level < child_level:
+            return True
+    return False
+
+
 def _conflicting_support_ids(support_ids: Sequence[str], support_by_id: Dict[str, SupportRecord]) -> List[str]:
     """Collects support ids explicitly marked as conflicts."""
 
@@ -726,20 +747,12 @@ class VersionManager:
         """Uses an LLM to classify how one candidate should affect registry state."""
 
         compact_candidate = self._skill_for_change_llm(skill, support_by_id=support_by_id)
-        compact_peers = [
-            self._skill_for_change_llm(peer, support_by_id=support_by_id)
-            for peer in list(peer_skills or [])
-            if peer.skill_id != skill.skill_id
-        ][:3]
         compact_existing = [
             self._skill_for_change_llm(existing, support_by_id=support_by_id)
             for existing in list(existing_skills or [])
         ][:3]
         if not compact_existing:
-            payload = {
-                "candidate_skill": compact_candidate,
-                "peer_candidates": compact_peers,
-            }
+            payload = {"candidate_skill": compact_candidate}
             system = (
                 "You are AutoSkill's Document Skill Version Manager.\n"
                 "Task: decide whether one brand-new candidate skill should be created or discarded.\n"
@@ -747,7 +760,6 @@ class VersionManager:
                 "Rules:\n"
                 "- Use discard only when the candidate is too weak, redundant, or not a reusable executable skill.\n"
                 "- Use create when it is a reusable skill worth registering.\n"
-                "- peer_candidates are weak context only; do not invent merge targets.\n"
                 "Return schema:\n"
                 "{\n"
                 '  "action": "create"|"discard",\n'
@@ -779,11 +791,17 @@ class VersionManager:
                 split_parent_id="",
             )
 
-        payload = {
-            "candidate_skill": compact_candidate,
-            "peer_candidates": compact_peers,
-            "existing_skills": compact_existing,
-        }
+        compact_peers: List[Dict[str, Any]] = []
+        if _needs_peer_context(skill, peer_skills=peer_skills, existing_skills=existing_skills):
+            compact_peers = [
+                self._skill_for_change_llm(peer, support_by_id=support_by_id)
+                for peer in list(peer_skills or [])
+                if peer.skill_id != skill.skill_id
+            ][:1]
+
+        payload = {"candidate_skill": compact_candidate, "existing_skills": compact_existing}
+        if compact_peers:
+            payload["peer_candidates"] = compact_peers
         system = (
             "You are AutoSkill's Document Skill Version Manager.\n"
             "Task: decide how one candidate document skill should update the registry.\n"
@@ -798,10 +816,10 @@ class VersionManager:
             "- discard: do not persist candidate\n"
             "Rules:\n"
             "- Decide from semantic capability identity, not lexical similarity.\n"
-            "- candidate_skill, peer_candidates, and existing_skills are compact summaries; do not assume omitted fields are meaningful differences.\n"
+            "- candidate_skill and existing_skills are compact summaries; do not assume omitted fields are meaningful differences.\n"
             "- Do not merge, strengthen, revise, or mark unchanged across different asset_type, granularity, or asset_node_id.\n"
             "- Treat macro_protocol, session_skill, micro_skill, safety_rule, and knowledge_reference as different asset layers unless there is an explicit split relationship.\n"
-            "- Use peer_candidates to detect split cases where multiple narrower candidates replace one broad existing skill.\n"
+            "- peer_candidates, when present, are weak context only for split detection.\n"
             "- Use support conflict evidence to avoid preserving outdated or unsafe guidance.\n"
             "- If action is strengthen/revise/unchanged/split, target_skill_ids should contain exactly one existing skill id.\n"
             "- If action is merge, target_skill_ids may contain one or more existing skill ids.\n"
@@ -838,6 +856,10 @@ class VersionManager:
         reason = str(obj.get("reason") or "").strip() or action
         existing_by_id = {existing.skill_id: existing for existing in list(existing_skills or [])}
         matched_existing = [existing_by_id[skill_id] for skill_id in matched if skill_id in existing_by_id]
+        if action in {"strengthen", "revise", "merge", "unchanged"} and not matched_existing:
+            action = "create"
+            matched = []
+            reason = "create (matched existing targets missing from retrieved candidates)"
         if action in {"strengthen", "revise", "merge", "unchanged"} and matched_existing:
             if any(not _same_asset_layer(resolved, existing) for existing in matched_existing):
                 action = "create"
@@ -847,12 +869,17 @@ class VersionManager:
                 action = "create"
                 matched = []
                 reason = "create (cross-node merge blocked)"
-        if action == "split" and matched_existing:
-            parent = matched_existing[0]
-            if _granularity_rank(resolved.granularity) <= _granularity_rank(parent.granularity):
+        if action == "split":
+            if not matched_existing:
                 action = "create"
                 matched = []
-                reason = "create (split requires narrower child)"
+                reason = "create (split parent missing from retrieved candidates)"
+            else:
+                parent = matched_existing[0]
+                if _granularity_rank(resolved.granularity) <= _granularity_rank(parent.granularity):
+                    action = "create"
+                    matched = []
+                    reason = "create (split requires narrower child)"
         return ChangeDecision(
             action=action,
             skill=resolved,
@@ -1191,6 +1218,8 @@ class VersionManager:
         """Merges multiple existing skills into one updated primary skill."""
 
         matched_ids = [skill_id for skill_id in decision.matched_skill_ids if skill_id in existing_skills_by_id]
+        if not matched_ids:
+            raise ValueError("merge requires at least one existing matched skill")
         primary_existing = existing_skills_by_id[matched_ids[0]]
         secondary_existing = [existing_skills_by_id[skill_id] for skill_id in matched_ids[1:]]
         next_version = self.create_new_version(current_version=primary_existing.version, action="merge")
