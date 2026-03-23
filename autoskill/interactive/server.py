@@ -314,6 +314,13 @@ def _skill_detail(
     }
     if provenance:
         out["provenance"] = provenance
+        usage_stats = dict(provenance.get("usage_stats") or {})
+        if usage_stats:
+            out["usage_stats"] = usage_stats
+        version_timeline = list(provenance.get("version_timeline") or [])
+        if version_timeline:
+            out["version_timeline"] = version_timeline
+            out["version_history_count"] = int(provenance.get("version_history_count", len(version_timeline)) or 0)
     if include_md:
         out["skill_md"] = str(files.get("SKILL.md") or "")
     return out

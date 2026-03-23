@@ -60,11 +60,17 @@ def load_online_skill_provenance(
         path=online_skill_provenance_path(sdk=sdk, user_id=user_id),
         user_id=user_id,
     )
-    return store.get_skill_record(
+    record = store.get_skill_record(
         skill_id=skill_id,
         max_sources=max_sources,
         max_history=max_history,
         include_messages=include_messages,
+    )
+    return _enrich_skill_record_live(
+        sdk=sdk,
+        user_id=user_id,
+        skill_id=skill_id,
+        record=record,
     )
 
 
@@ -89,7 +95,12 @@ def record_online_skill_updates(
     )
     source_ref = build_online_source_ref(messages=messages, events=events, metadata=metadata)
     for skill in skills:
-        store.record_skill_update(skill=skill, source_ref=source_ref)
+        store.record_skill_update(
+            skill=skill,
+            source_ref=source_ref,
+            usage_stats=_load_usage_stats_for_skill(sdk=sdk, user_id=user_id, skill_id=str(getattr(skill, "id", "") or "")),
+            version_timeline=_build_version_timeline(skill),
+        )
     store.save()
     return store.summary()
 
@@ -204,8 +215,10 @@ class OnlineSkillProvenanceStore:
                     "version": str((row or {}).get("current_version") or ""),
                     "source_count": int((row or {}).get("source_count", 0) or 0),
                     "history_count": int((row or {}).get("history_count", 0) or 0),
+                    "version_history_count": int((row or {}).get("version_history_count", 0) or 0),
                     "last_channel": str((row or {}).get("last_channel") or ""),
                     "last_trigger": str((row or {}).get("last_trigger") or ""),
+                    "usage_stats": dict((row or {}).get("usage_stats") or {}),
                 }
                 for sid, row in skills.items()
             ],
@@ -241,7 +254,14 @@ class OnlineSkillProvenanceStore:
         out["history"] = history
         return out
 
-    def record_skill_update(self, *, skill: Any, source_ref: Dict[str, Any]) -> None:
+    def record_skill_update(
+        self,
+        *,
+        skill: Any,
+        source_ref: Dict[str, Any],
+        usage_stats: Optional[Dict[str, Any]] = None,
+        version_timeline: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         sid = str(getattr(skill, "id", "") or "").strip()
         if not sid:
             return
@@ -258,8 +278,11 @@ class OnlineSkillProvenanceStore:
                 "updated_at_ms": 0,
                 "source_count": 0,
                 "history_count": 0,
+                "version_history_count": 0,
                 "last_channel": "",
                 "last_trigger": "",
+                "usage_stats": {},
+                "version_timeline": [],
                 "sources": [],
                 "history": [],
             },
@@ -270,6 +293,9 @@ class OnlineSkillProvenanceStore:
         row["updated_at_ms"] = now_ms
         row["last_channel"] = str(source_ref.get("channel") or "")
         row["last_trigger"] = str(source_ref.get("trigger") or "")
+        row["usage_stats"] = dict(usage_stats or {})
+        row["version_timeline"] = list(version_timeline or [])
+        row["version_history_count"] = len(list(row.get("version_timeline") or []))
 
         self._merge_source_row(row=row, source_ref=source_ref, now_iso=now_iso, now_ms=now_ms)
         self._append_history_event(
@@ -278,6 +304,8 @@ class OnlineSkillProvenanceStore:
             source_ref=source_ref,
             now_iso=now_iso,
             now_ms=now_ms,
+            usage_stats=dict(usage_stats or {}),
+            version_timeline=list(version_timeline or []),
         )
         row["source_count"] = len(list(row.get("sources") or []))
         row["history_count"] = len(list(row.get("history") or []))
@@ -336,6 +364,8 @@ class OnlineSkillProvenanceStore:
         source_ref: Dict[str, Any],
         now_iso: str,
         now_ms: int,
+        usage_stats: Dict[str, Any],
+        version_timeline: List[Dict[str, Any]],
     ) -> None:
         history = list(row.get("history") or [])
         event = {
@@ -358,6 +388,9 @@ class OnlineSkillProvenanceStore:
             "assistant_turn_count": int(source_ref.get("assistant_turn_count", 0) or 0),
             "latest_user_preview": str(source_ref.get("latest_user_preview") or ""),
             "latest_assistant_preview": str(source_ref.get("latest_assistant_preview") or ""),
+            "usage_stats": dict(usage_stats or {}),
+            "version_history_count": len(list(version_timeline or [])),
+            "version_timeline_tail": list(version_timeline[-5:] if version_timeline else []),
             "messages": list(source_ref.get("messages") or []),
             "events": list(source_ref.get("events") or []),
             "metadata": _json_safe_metadata(dict(source_ref.get("metadata") or {})),
@@ -373,6 +406,9 @@ class OnlineSkillProvenanceStore:
                 last["timestamp"] = now_iso
                 last["timestamp_ms"] = now_ms
                 last["repeat_count"] = int(last.get("repeat_count", 1) or 1) + 1
+                last["usage_stats"] = dict(usage_stats or {})
+                last["version_history_count"] = len(list(version_timeline or []))
+                last["version_timeline_tail"] = list(version_timeline[-5:] if version_timeline else [])
                 history[-1] = last
                 row["history"] = history[-_MAX_HISTORY_PER_SKILL:]
                 return
@@ -430,3 +466,116 @@ def _now_ms() -> int:
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _enrich_skill_record_live(
+    *,
+    sdk: Any,
+    user_id: str,
+    skill_id: str,
+    record: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merges live version/usage state into a persisted provenance record."""
+
+    out = copy.deepcopy(dict(record or {}))
+    if not out:
+        return out
+    sid = str(skill_id or out.get("skill_id") or "").strip()
+    if not sid:
+        return out
+    skill = None
+    try:
+        skill = sdk.get(sid)
+    except Exception:
+        skill = None
+    if skill is not None:
+        timeline = _build_version_timeline(skill)
+        out["version_timeline"] = timeline
+        out["version_history_count"] = len(timeline)
+        out["current_version"] = str(getattr(skill, "version", "") or out.get("current_version") or "")
+        out["name"] = str(getattr(skill, "name", "") or out.get("name") or "")
+        out["updated_at"] = str(getattr(skill, "updated_at", "") or out.get("updated_at") or "")
+    usage_stats = _load_usage_stats_for_skill(sdk=sdk, user_id=user_id, skill_id=sid)
+    if usage_stats:
+        out["usage_stats"] = usage_stats
+    return out
+
+
+def _load_usage_stats_for_skill(*, sdk: Any, user_id: str, skill_id: str) -> Dict[str, Any]:
+    """Loads one skill's retrieval/relevance/usage counters from the configured store."""
+
+    sid = str(skill_id or "").strip()
+    uid = str(user_id or "").strip()
+    if not sid or not uid:
+        return {}
+    try:
+        fn = getattr(getattr(sdk, "store", None), "get_skill_usage_stats", None)
+        if not callable(fn):
+            return {}
+        raw = fn(user_id=uid, skill_id=sid)
+    except Exception:
+        return {}
+    skills = dict(raw.get("skills") or {}) if isinstance(raw, dict) else {}
+    row = dict(skills.get(sid) or {})
+    if not row:
+        return {}
+    return {
+        "retrieved": int(row.get("retrieved", 0) or 0),
+        "relevant": int(row.get("relevant", 0) or 0),
+        "used": int(row.get("used", 0) or 0),
+        "last_retrieved_at": int(row.get("last_retrieved_at", 0) or 0),
+        "last_relevant_at": int(row.get("last_relevant_at", 0) or 0),
+        "last_used_at": int(row.get("last_used_at", 0) or 0),
+    }
+
+
+def _build_version_timeline(skill: Any) -> List[Dict[str, Any]]:
+    """Builds a compact version timeline from `_autoskill_version_history` plus current state."""
+
+    metadata = dict(getattr(skill, "metadata", {}) or {})
+    hist_raw = metadata.get("_autoskill_version_history")
+    out: List[Dict[str, Any]] = []
+    if isinstance(hist_raw, list):
+        for item in hist_raw:
+            if not isinstance(item, dict):
+                continue
+            out.append(_compact_version_entry(item, is_current=False))
+    out.append(
+        _compact_version_entry(
+            {
+                "version": str(getattr(skill, "version", "") or ""),
+                "name": str(getattr(skill, "name", "") or ""),
+                "description": str(getattr(skill, "description", "") or ""),
+                "instructions": str(getattr(skill, "instructions", "") or ""),
+                "tags": [str(t).strip() for t in (getattr(skill, "tags", []) or []) if str(t).strip()],
+                "triggers": [str(t).strip() for t in (getattr(skill, "triggers", []) or []) if str(t).strip()],
+                "examples": list(getattr(skill, "examples", []) or []),
+                "updated_at": str(getattr(skill, "updated_at", "") or ""),
+            },
+            is_current=True,
+        )
+    )
+    return out
+
+
+def _compact_version_entry(item: Dict[str, Any], *, is_current: bool) -> Dict[str, Any]:
+    """Normalizes one version snapshot into a compact timeline row."""
+
+    tags = [str(t).strip() for t in (item.get("tags") or []) if str(t).strip()]
+    triggers = [str(t).strip() for t in (item.get("triggers") or []) if str(t).strip()]
+    examples = item.get("examples")
+    if isinstance(examples, list):
+        examples_count = len(examples)
+    else:
+        examples_count = 0
+    return {
+        "version": str(item.get("version") or ""),
+        "name": str(item.get("name") or ""),
+        "description": str(item.get("description") or ""),
+        "updated_at": str(item.get("updated_at") or ""),
+        "is_current": bool(is_current),
+        "tags": tags[:12],
+        "triggers": triggers[:12],
+        "examples_count": int(examples_count),
+        "instructions_preview": _preview_text(str(item.get("instructions") or ""), limit=320),
+    }

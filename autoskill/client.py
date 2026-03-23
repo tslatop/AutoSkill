@@ -245,6 +245,22 @@ class AutoSkill:
             include_messages=include_messages,
         )
 
+    def get_skill_usage_stats(
+        self,
+        *,
+        user_id: str,
+        skill_id: str = "",
+    ) -> Dict[str, Any]:
+        """Loads persistent retrieval/relevance/usage counters from the configured store."""
+
+        fn = getattr(self.store, "get_skill_usage_stats", None)
+        if not callable(fn):
+            return {"skills": {}}
+        try:
+            return fn(user_id=user_id, skill_id=skill_id)
+        except Exception:
+            return {"skills": {}}
+
     def import_openai_conversations(
         self,
         *,
