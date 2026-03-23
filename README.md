@@ -21,6 +21,7 @@ and continuously evolves existing Skills through merge + version updates.
 
 ## News
 
+- **2026-03-23**: **SkillEvo 1.0** released (Enabling models to iteratively self-evolve Skills through replay, evaluation, mutation, and promotion).
 - **2026-03-13**: **AutoSkill4Doc 1.0** released (Being expext by extracting skills from document/research paper).
 - **2026-03-01**: Added offline skill extraction from archived conversations (See Skills in SkillBank/CovSkill).
 - **2025-02-26**: **AutoSkill4OpenClaw 1.0** released (Extracting skills from trajectory of OpenClaw).
