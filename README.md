@@ -776,7 +776,7 @@ If you use AutoSkill in academic work, technical reports, or demos, please cite:
   url={https://arxiv.org/abs/2603.01145},
 }
 ```
-
+ 
 ## 12. Contributions and Acknowledgments
 
 Institutions: Shanghai AI Laboratory, School of Computer Science at East China Normal University
