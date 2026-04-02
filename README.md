@@ -66,6 +66,7 @@ and continuously evolves existing Skills through merge + version updates.
   - [9.4 OpenAI-Compatible Proxy API](#94-openai-compatible-proxy-api)
   - [9.5 Auto Evaluation Script](#95-auto-evaluation-script)
   - [9.6 AutoSkill4OpenClaw](#96-autoskill4openclaw)
+- [10. Star History](#10-star-history)
 - [11. Citation](#11-citation)
 - [12. Contributions and Acknowledgments](#12-contributions-and-acknowledgments)
 
@@ -753,6 +754,12 @@ curl http://127.0.0.1:9100/v1/autoskill/vectors/rebuild \
   }'
 ```
 
+## 10. Star History
+
+Star History is implemented by embedding a dynamic SVG chart from `star-history.com`. The service reads the public GitHub stargazer timeline and renders it as an automatically updating line chart in the README.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ECNU-ICALK/AutoSkill&type=Date)](https://star-history.com/#ECNU-ICALK/AutoSkill&Date)
+
 ## 11. Citation
 
 If you use AutoSkill in academic work, technical reports, or demos, please cite:
@@ -776,7 +783,7 @@ If you use AutoSkill in academic work, technical reports, or demos, please cite:
   url={https://arxiv.org/abs/2603.01145},
 }
 ```
- 
+
 ## 12. Contributions and Acknowledgments
 
 Institutions: Shanghai AI Laboratory, School of Computer Science at East China Normal University
