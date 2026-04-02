@@ -756,8 +756,6 @@ curl http://127.0.0.1:9100/v1/autoskill/vectors/rebuild \
 
 ## 10. Star History
 
-Star History is implemented by embedding a dynamic SVG chart from `star-history.com`. The service reads the public GitHub stargazer timeline and renders it as an automatically updating line chart in the README.
-
 [![Star History Chart](https://api.star-history.com/svg?repos=ECNU-ICALK/AutoSkill&type=Date)](https://star-history.com/#ECNU-ICALK/AutoSkill&Date)
 
 ## 11. Citation

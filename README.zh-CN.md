@@ -756,8 +756,6 @@ curl http://127.0.0.1:9100/v1/autoskill/vectors/rebuild \
 
 ## 10. Star History
 
-这里的 Star History 通过嵌入 `star-history.com` 提供的动态 SVG 图表实现。该服务会读取 GitHub 公开的 Stargazer 时间序列，并在 README 中自动渲染为折线图。
-
 [![Star History Chart](https://api.star-history.com/svg?repos=ECNU-ICALK/AutoSkill&type=Date)](https://star-history.com/#ECNU-ICALK/AutoSkill&Date)
 
 ## 11. 引用（Citation）
