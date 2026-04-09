@@ -1036,6 +1036,52 @@ test("embedded runtime keeps skills in SkillBank without mirroring when install 
   assert.equal(fs.existsSync(path.join(paths.openclawSkillsDir, skillDirName, "SKILL.md")), false);
 });
 
+test("embedded runtime mirror does not overwrite existing non-managed OpenClaw skill dir", async () => {
+  const paths = makeSandbox();
+  const logger = makeLogger();
+  const manualDir = path.join(paths.openclawSkillsDir, "Release-Checklist");
+  fs.mkdirSync(manualDir, { recursive: true });
+  fs.writeFileSync(path.join(manualDir, "SKILL.md"), "# Manual skill\n", "utf8");
+
+  const processor = createEmbeddedProcessor(makeConfig(paths), {}, logger, {
+    invokeModel: makeInvokeModelForAdd(),
+  });
+
+  const done = await processor.handle(
+    {
+      user: "user1",
+      session_id: "sess-mirror-conflict",
+      turn_type: "main",
+      session_done: true,
+      success: true,
+      messages: [
+        { role: "user", content: "Please teach me release routine." },
+        { role: "assistant", content: "Use a reusable checklist." },
+      ],
+    },
+    {},
+    {},
+  );
+
+  assert.equal(done.status, "scheduled");
+  const job = done.jobs.find((item) => item.status === "added");
+  assert.ok(job);
+  assert.equal(fs.readFileSync(path.join(manualDir, "SKILL.md"), "utf8"), "# Manual skill\n");
+  const mirroredDir = path.join(paths.openclawSkillsDir, "Release-Checklist-autoskill");
+  assert.ok(fs.existsSync(path.join(mirroredDir, "SKILL.md")));
+  const marker = JSON.parse(fs.readFileSync(path.join(mirroredDir, ".autoskill-managed.json"), "utf8"));
+  assert.equal(marker.managed_by, "autoskill_openclaw_plugin");
+  assert(
+    logger.entries.some(
+      (entry) =>
+        entry.level === "warn" &&
+        /embedded mirror destination conflict base=Release-Checklist mirrored_as=Release-Checklist-autoskill/.test(
+          String(entry.message || ""),
+        ),
+    ),
+  );
+});
+
 test("embedded runtime writes single-line frontmatter-safe metadata for generated SKILL.md", async () => {
   const paths = makeSandbox();
   const logger = makeLogger();

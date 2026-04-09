@@ -209,6 +209,7 @@ AUTOSKILL_OPENCLAW_SKILL_INSTALL_MODE=openclaw_mirror
 
 - AutoSkill `SkillBank` 是技能真源
 - OpenClaw 本地 skills 目录只是安装镜像，不是真源
+- 如果用户自己已经在 OpenClaw 本地 skills 目录里放了同名但非 AutoSkill 管理的 skill，AutoSkill 会改用 `<name>-autoskill` 这类后缀目录镜像，不会直接覆盖原目录
 - `before_prompt_build` 的检索注入默认关闭，避免重复检索、重复提示
 - 在 embedded 主线下，`agent_end` 在 adapter 运行时内驱动抽取与维护
 - 如果 `before_prompt_build` 因为 `session_id` 变化或 `sessionMaxTurns` 命中而收口了旧会话，这个闭合会话也会异步继续处理，不会只归档不抽取
@@ -256,6 +257,7 @@ AUTOSKILL_OPENCLAW_PROMPT_PACK_PATH=/abs/path/to/openclaw_prompt_pack.txt
 - embedded 实时会话快照（每次收到 turn 都会更新）：`~/.openclaw/autoskill/embedded_sessions/<user>/<session>.latest.json`
 - embedded 已处理会话账本：`~/.openclaw/autoskill/embedded_sessions/.autoskill_embedded_processed.jsonl`
 - OpenClaw 本地技能镜像：`~/.openclaw/workspace/skills`
+  AutoSkill 管理的镜像目录会带 `.autoskill-managed.json`，后续自动覆盖时只会覆盖这些 AutoSkill 自己创建的目录
 - sidecar 对话归档（`runtimeMode=sidecar`）：`~/.openclaw/autoskill/conversations`
 
 长会话兜底收口：

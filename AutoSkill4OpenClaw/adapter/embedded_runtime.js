@@ -1096,6 +1096,8 @@ const MAX_SKILL_FILES = 16;
 const MAX_SKILL_FILE_PATH_CHARS = 160;
 const MAX_SKILL_FILE_CONTENT_CHARS = 12000;
 const ALLOWED_SKILL_FILE_ROOTS = new Set(["scripts", "references", "assets"]);
+const MIRROR_MANAGED_MARKER = ".autoskill-managed.json";
+const MIRROR_MANAGED_BY = "autoskill_openclaw_plugin";
 
 function normalizeResourceRelPath(value, defaultRoot = "") {
   const fallbackRoot = trimmed(defaultRoot).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
@@ -1643,14 +1645,65 @@ function writeSkill({ skillBankDir, userId, dirName, skill, existing }) {
   return { dirPath: targetDir, mdPath };
 }
 
-function mirrorSkillToOpenClaw({ openclawSkillsDir, skillDirPath }) {
+function readManagedMirrorMarker(dirPath) {
+  const markerPath = path.join(dirPath, MIRROR_MANAGED_MARKER);
+  if (!fs.existsSync(markerPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function isManagedMirrorDir(dirPath) {
+  if (!fs.existsSync(dirPath)) return false;
+  const marker = readManagedMirrorMarker(dirPath);
+  return normalizeComparableText(marker?.managed_by) === normalizeComparableText(MIRROR_MANAGED_BY);
+}
+
+function writeManagedMirrorMarker(dirPath, skillDirPath) {
+  const markerPath = path.join(dirPath, MIRROR_MANAGED_MARKER);
+  writeJson(markerPath, {
+    managed_by: MIRROR_MANAGED_BY,
+    source_dir_name: path.basename(skillDirPath),
+    mirrored_at_ms: nowMs(),
+  });
+}
+
+function resolveMirrorDestination(openclawSkillsDir, baseName) {
+  const root = path.resolve(openclawSkillsDir);
+  const base = slug(baseName, "skill");
+  const candidates = [base];
+  candidates.push(`${base}-autoskill`);
+  for (let idx = 2; idx <= 99; idx += 1) {
+    candidates.push(`${base}-autoskill-${idx}`);
+  }
+  for (const name of candidates) {
+    const dst = path.join(root, name);
+    if (!fs.existsSync(dst) || isManagedMirrorDir(dst)) {
+      return { path: dst, name, hadConflict: name !== base };
+    }
+  }
+  const fallbackName = `${base}-autoskill-${nowMs()}`;
+  return { path: path.join(root, fallbackName), name: fallbackName, hadConflict: true };
+}
+
+function mirrorSkillToOpenClaw({ openclawSkillsDir, skillDirPath, log }) {
   const name = path.basename(skillDirPath);
-  const dst = path.join(openclawSkillsDir, name);
+  const resolved = resolveMirrorDestination(openclawSkillsDir, name);
+  const dst = resolved.path;
   ensureDir(openclawSkillsDir);
   if (fs.existsSync(dst)) {
     fs.rmSync(dst, { recursive: true, force: true });
   }
   fs.cpSync(skillDirPath, dst, { recursive: true, force: true });
+  writeManagedMirrorMarker(dst, skillDirPath);
+  if (resolved.hadConflict && log?.warn) {
+    log.warn(
+      `[autoskill-openclaw-adapter] embedded mirror destination conflict base=${name} mirrored_as=${path.basename(dst)}`,
+    );
+  }
   return dst;
 }
 
@@ -2141,6 +2194,7 @@ export function createEmbeddedProcessor(cfg, api, log, deps = {}) {
       const mirrorPath = mirrorSkillToOpenClaw({
         openclawSkillsDir,
         skillDirPath: write.dirPath,
+        log,
       });
       return { status: "merged", skill_id: target.id, path: write.mdPath, mirror_path: mirrorPath };
     }
@@ -2172,6 +2226,7 @@ export function createEmbeddedProcessor(cfg, api, log, deps = {}) {
     const mirrorPath = mirrorSkillToOpenClaw({
       openclawSkillsDir,
       skillDirPath: write.dirPath,
+      log,
     });
     return { status: "added", skill_id: dirName, path: write.mdPath, mirror_path: mirrorPath };
   }

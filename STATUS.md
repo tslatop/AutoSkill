@@ -1,5 +1,51 @@
 # STATUS
 
+## 2026-04-09 - Round 34 (embedded mirror overwrite guardrails)
+
+### Scope
+- Target area: `AutoSkill4OpenClaw/adapter/embedded_runtime.js`, `AutoSkill4OpenClaw/adapter/embedded_runtime.test.mjs`, and embedded user docs.
+- Objective: reduce the risk of embedded mirror installs overwriting user-owned OpenClaw local skill folders, and improve operator visibility when name conflicts happen.
+
+### Completed
+- Hardened embedded mirror behavior:
+  - embedded mirror directories now write `.autoskill-managed.json`
+  - only AutoSkill-managed mirror folders are overwritten in place
+  - if a same-name non-managed local skill folder already exists, AutoSkill now falls back to a suffixed mirror directory such as `<name>-autoskill`
+- Added a warning log when embedded mirror has to choose a suffixed destination because of an existing non-managed folder.
+- Added regression coverage in `AutoSkill4OpenClaw/adapter/embedded_runtime.test.mjs`:
+  - verifies an existing user-owned local skill directory is preserved
+  - verifies AutoSkill mirrors into a safe suffixed folder instead
+  - verifies the managed marker file is written
+- Updated embedded README docs in both languages:
+  - documented the non-overwrite behavior for existing local skill folders
+  - documented `.autoskill-managed.json` as the ownership marker for embedded mirror directories
+
+### Validation
+- Executed:
+  - `cd AutoSkill4OpenClaw/adapter && npm test`
+  - `python3 -m unittest discover -s AutoSkill4OpenClaw/tests -q`
+- Result:
+  - `67/67` adapter tests pass.
+  - `62/62` Python tests pass.
+
+### Self-Review Notes
+- This change stays strictly inside the embedded mirror path and does not affect:
+  - memory / compaction / tools / provider behavior
+  - sidecar runtime behavior
+  - skill retrieval injection behavior
+- The fallback-to-suffixed-directory behavior is intentionally conservative: preserving an existing user-owned folder is safer than forcing a same-name overwrite.
+
+### Remaining Issues / Risks
+- Embedded extraction still depends on the host OpenClaw deployment actually invoking the adapter lifecycle hooks.
+- Live checkpoint extraction is still best-effort in memory across a running process; after a host restart, checkpoint progression resumes from subsequent turns rather than from a persisted checkpoint cursor.
+- Embedded mirror still uses directory-name heuristics rather than a full manifest-based per-skill mapping like the Python-side mirror manager.
+
+### Next Step
+- Continue with operator-focused hardening:
+  - improve visibility around model invocation fallback failures in real deployments
+  - evaluate whether embedded mirror should adopt a manifest-backed folder mapping similar to the Python mirror path
+  - keep pruning/cleanup logic conservative and fail-open
+
 ## 2026-04-08 - Round 33 (embedded live checkpoint extraction)
 
 ### Scope

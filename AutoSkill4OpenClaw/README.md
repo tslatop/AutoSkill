@@ -209,6 +209,7 @@ That means:
 
 - AutoSkill `SkillBank` is the source of truth.
 - OpenClaw local skills are an install mirror, not the source of truth.
+- If a user already has a non-AutoSkill local skill folder with the same name, AutoSkill mirrors into a suffixed folder such as `<name>-autoskill` instead of overwriting that existing folder.
 - `before_prompt_build` retrieval injection is disabled by default to avoid double retrieval and double guidance.
 - In embedded mainline, `agent_end` is handled in adapter runtime and drives extraction/maintenance.
 - If `before_prompt_build` closes a previous session because `session_id` changed or `sessionMaxTurns` was reached, that closed session is also processed asynchronously instead of being left in `embedded_sessions` only.
@@ -256,6 +257,7 @@ If the prompt pack is missing or invalid, both runtimes fail open and fall back 
 - Embedded live session snapshot (updated every incoming turn): `~/.openclaw/autoskill/embedded_sessions/<user>/<session>.latest.json`
 - Embedded processed-session ledger: `~/.openclaw/autoskill/embedded_sessions/.autoskill_embedded_processed.jsonl`
 - Mirrored OpenClaw local skills: `~/.openclaw/workspace/skills`
+  AutoSkill-managed mirrored folders include `.autoskill-managed.json` so only AutoSkill-owned mirrors are overwritten automatically.
 - Sidecar conversation archive (`runtimeMode=sidecar`): `~/.openclaw/autoskill/conversations`
 
 Long-lived session safeguard:
