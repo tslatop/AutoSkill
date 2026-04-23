@@ -1,7 +1,7 @@
 # 主导故事识别与内化信念解构 Evidence
 
 - family: 后现代主义
-- skill_id: b8e05f7c-8f5b-5e91-b5ba-236c9281a6c8
+- skill_id: 6d394756-b434-5444-b8d4-104142bf5404
 - support_count: 1
 
 ## Evidence 1

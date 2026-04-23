@@ -1,7 +1,7 @@
 # 意象对话引导 Evidence
 
 - family: 心理动力学
-- skill_id: 86c62b88-6927-5422-85dc-62bf7935387c
+- skill_id: 3bd51486-c836-5e0e-a658-e6118c728afe
 - support_count: 1
 
 ## Evidence 1

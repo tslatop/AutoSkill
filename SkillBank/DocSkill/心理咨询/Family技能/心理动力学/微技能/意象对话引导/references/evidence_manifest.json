@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-23T09:02:27+00:00",
+  "generated_at": "2026-04-22T03:12:11+00:00",
   "family_name": "心理动力学",
-  "skill_id": "86c62b88-6927-5422-85dc-62bf7935387c",
+  "skill_id": "3bd51486-c836-5e0e-a658-e6118c728afe",
   "skill_name": "意象对话引导",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework/session_framework/micro_intervention",
         "asset_level": 3,
         "visible_role": "leaf",
-        "objective": "识别潜意识冲突主题",
-        "task_family": "心理评估",
+        "objective": "识别潜意识象征意象以定位核心冲突",
+        "task_family": "心理评估与关系建立",
         "method_family": "心理动力学",
         "stage": "初始访谈",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "58bb8a86-b060-57d9-b6e7-1838ac3453ef",
         "window_strategy": "strict",
         "anchor_hits": [

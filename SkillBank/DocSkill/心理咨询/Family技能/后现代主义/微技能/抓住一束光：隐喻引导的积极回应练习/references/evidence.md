@@ -1,7 +1,7 @@
 # 抓住一束光：隐喻引导的积极回应练习 Evidence
 
 - family: 后现代主义
-- skill_id: c3182ab2-1809-5da0-b52e-27123c0e5610
+- skill_id: 38acc211-5006-580a-b5de-87b198403a18
 - support_count: 1
 
 ## Evidence 1
@@ -13,7 +13,7 @@
 - source_file: /Users/panc/AutoSkill/Psy_markdown/pmt/tppc20240604194-201.md
 - section: 4 开展咨询
 - span: 3635:5892
-- confidence: 0.99
+- confidence: 0.97
 - quote: 4.1 诊断评估与咨询关系建立阶段（第1、2次咨询）
 通过摄入性会谈建立良好的咨、访关系，收集来访者的资料，完成心理测验，确定主要问题，进行诊断评估；提高求助者对心理咨询的认识；引导宣泄积压的不良情绪；确立咨询目标和方案。
 

@@ -1,7 +1,7 @@
 # 想象-放松配对微序列 Evidence
 
 - family: 行为主义
-- skill_id: f33c11eb-c626-524b-aaed-d92cd69bfb54
+- skill_id: 8b76fcac-6b26-5563-80f1-756fb02b863e
 - support_count: 1
 
 ## Evidence 1
@@ -13,7 +13,7 @@
 - source_file: /Users/panc/AutoSkill/Psy_markdown/bt/甜甜的社交恐怖症——心理咨询案例.md
 - section: 甜甜的社交恐怖症——心理咨询案例
 - span: 1961:2691
-- confidence: 0.95
+- confidence: 0.98
 - quote: 在甜甜对自己人际恐怖症状成因有了理性的认识之后,焦虑心情有所缓解。
 
 第三阶段:运用系统脱敏疗法进行放松训练。

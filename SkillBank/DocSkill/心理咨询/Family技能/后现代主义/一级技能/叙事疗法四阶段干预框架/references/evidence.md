@@ -1,7 +1,7 @@
 # 叙事疗法四阶段干预框架 Evidence
 
 - family: 后现代主义
-- skill_id: fb3e3fa4-de7b-5c47-bee1-f2cbd0643726
+- skill_id: 97454855-764f-56c4-ac3c-f540950f576d
 - support_count: 1
 
 ## Evidence 1

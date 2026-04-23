@@ -1,173 +1,97 @@
 ---
-id: "592c48dd-573b-5d92-a52d-03ac86a21c79"
+id: "76248048-585c-5cef-8059-4b12e8325e9f"
 name: "SUDS-Guided Exposure Pacing"
-description: "A micro-intervention where the therapist uses real-time SUDS ratings to calibrate pacing, validate distress, and decide whether to continue, pause, or repeat segments of imaginal exposure."
+description: "A micro-intervention where the therapist uses real-time SUDS ratings to pace imaginal exposure: pausing only for brief regulation, prompting continuation at SUDS < 90, and reinforcing tolerance at peaks."
 version: "0.1.0"
 tags:
   - "imaginal exposure"
   - "SUDS"
-  - "distress regulation"
-  - "behavioral pacing"
+  - "PTSD"
+  - "behavioral activation"
+  - "exposure pacing"
   - "行为主义"
   - "profile:psychology::行为主义"
   - "axis:疗法"
-  - "class:行为主义"
-  - "kind:child"
-  - "document_merge_state:active"
-  - "canonical:true"
 triggers:
-  - "Client provides a SUDS rating ≥70 mid-exposure"
-  - "Client pauses or shows physiological arousal (sweating, tearfulness)"
-  - "Therapist observes incongruence between reported SUDS and behavioral cues"
+  - "Client reports SUDS ≥ 70 during memory narration"
+  - "Client pauses mid-narrative with visible distress (sweating, tearfulness)"
+  - "Therapist observes physiological arousal cues"
 examples:
-  - input: "Client: 'The truck hits us on the back left side door... (pauses, sweating)'"
-    output: "Therapist: 'What’s your SUDS right now?'"
-    notes: "SUDS elicitation triggered by pause + physiological cue"
-  - input: "Client: '100.'"
-    output: "Therapist: 'That’s completely expected at this part — let’s stay right here for 30 more seconds, then check again.'"
-    notes: "Normalization + time-bound continuation directive"
-  - input: "Client: '70.'"
-    output: "Therapist: 'I know how hard that was — you did a great job. Are you ready to try that part again?'"
-    notes: "Validation + explicit invitation to repeat"
+  - input: "Client pauses mid-narrative, sweating, SUDS reported as 100."
+    output: "Therapist: 'What’s your SUDS right now?' → Client: '100.' → Therapist: 'You’re doing great — keep going. Remember, it’s just a memory; you’re safe here.'"
+    notes: "Prompt occurs within 5 sec of pause; no delay for regulation unless SUDS remains ≥ 90 after 15 sec."
+  - input: "Client says 'I can’t go on' after SUDS 70, tearful but oriented."
+    output: "Therapist: 'I know how hard that was — you did a great job staying with it so far. Would you like to try continuing from where you left off?'"
+    notes: "Reinforcement precedes invitation; avoids pressure while preserving exposure frame."
 ---
 
 # SUDS-Guided Exposure Pacing
 
-A micro-intervention where the therapist uses real-time SUDS ratings to calibrate pacing, validate distress, and decide whether to continue, pause, or repeat segments of imaginal exposure.
+A micro-intervention where the therapist uses real-time SUDS ratings to pace imaginal exposure: pausing only for brief regulation, prompting continuation at SUDS < 90, and reinforcing tolerance at peaks.
 
 ## Prompt
 
-Elicit SUDS mid-exposure; interpret the value in context of expected distress trajectory; normalize it verbally; then explicitly state the next behavioral step (e.g., 'stay here for 30 more seconds', 'let’s pause and ground', or 'try that segment again') — all while maintaining empathic presence and safety framing.
+Monitor SUDS continuously during imaginal exposure. If client reports SUDS ≥ 70 or shows visible distress (e.g., sweating, tearfulness, pause), immediately check SUDS. If SUDS is < 90 and client is responsive, gently prompt continuation ('You're doing great; keep going') and normalize safety ('It's just a memory—you are safe here'). If SUDS remains ≥ 90 after 10–15 seconds of grounding, briefly validate and recheck; do not extend pause beyond 20 seconds unless dissociation or medical concern is evident. Reinforce effort and tolerance after each segment, especially post-peak.
 
 ## Objective
 
-Anchor exposure delivery to client’s subjective distress level to maintain therapeutic window and prevent overwhelm.
+Maintain therapeutic exposure dose while preventing overwhelm via moment-to-moment SUDS-informed timing decisions.
 ## Applicable Signals
 
-- SUDS ≥70 during memory narration
-- physiological signs of arousal (tearfulness, sweating, shallow breathing)
-- narrative pause longer than 5 seconds without prompting
+- SUDS rating reported verbally
+- Pause longer than 5 seconds during narration
+- Autonomic signs: sweating, trembling, rapid breathing, tearfulness
 
 ## Contraindications
 
-- Client refuses SUDS self-reporting
-- Client is dissociated or non-responsive
-- SUDS scale has not been previously calibrated with the client
+- Client is dissociated or unresponsive to verbal prompts
+- SUDS is unstable due to acute medical issue
+- Client explicitly requests stop without rationale
 
 ## Intervention Moves
 
-- eliciting SUDS with open timing ('What’s your SUDS right now?')
-- normalizing the rating ('That’s expected at this point')
-- linking rating to action ('You’re at 100 — let’s stay here for 30 more seconds before checking again')
+- SUDS check on pause or distress cue
+- Brief normalization + safety reminder
+- Time-limited encouragement to resume
+- Post-segment reinforcement tied to tolerance, not outcome
 
 ## Workflow Steps
 
-- 1. Elicit current SUDS rating using standardized 0–100 scale
-- 2. Acknowledge and normalize the rating in relation to exposure phase
-- 3. Observe behavioral and physiological cues for congruence
-- 4. Verbally name the rating and explicitly state the next micro-action (continue, pause, repeat, or ground)
-- 5. Confirm client’s capacity to proceed (e.g., 'Are you ready to keep going?')
+- Observe for distress cue or spontaneous pause.
+- Ask: 'What’s your SUDS right now?' — wait for verbal response.
+- If SUDS < 90 and client is oriented: say 'You're doing great; keep going' + 'Remember, it’s just a memory — you’re safe here.'
+- If SUDS ≥ 90: hold 10–15 sec, then recheck; if still ≥ 90, offer one breath and recheck once more — then decide whether to continue or pause briefly.
+- After resumption or completion of segment, name effort: 'I know how hard that was — you stayed with it.'
 
 ## Constraints
 
-- Must occur only after SUDS scale has been introduced and practiced in prior session(s)
-- SUDS check must be timed mid-narrative—not only at start/end
-- No interpretation beyond normalization and action-linking; avoid reassurance or premature reframing
+- Do not pause longer than 20 seconds unless safety assessment indicates need
+- Do not proceed if client is nonverbal or disoriented
+- SUDS must be confirmed verbally—not assumed from behavior alone
 
 ## Cautions
 
-- Avoid interpreting SUDS as 'progress' or 'failure'; treat it solely as pacing data
-- Do not override client’s expressed inability to continue, even if SUDS is <70
-- If SUDS drops rapidly (<30 sec), verify grounding status before proceeding
+- Avoid reassurance that minimizes experience (e.g., 'It’s over now')—instead anchor in present safety and agency
+- Never override explicit stop request—even if rationale seems insufficient
+- If SUDS spikes to 100 and remains there across two checks, consider short break and collaborative re-engagement
 
 ## Output Contract
 
-- Therapist names the SUDS value, normalizes it, and explicitly links next action — and client resumes narrative or confirms readiness.
+- Client resumes narration within 15 seconds after SUDS check, with no escalation beyond prior peak SUDS value.
 
 ## Example Therapist Responses
 
 ### Example 1
 
-- Client/Input: Client: 'The truck hits us on the back left side door... (pauses, sweating)'
-- Therapist/Output: Therapist: 'What’s your SUDS right now?'
-- Notes: SUDS elicitation triggered by pause + physiological cue
+- Client/Input: Client pauses mid-narrative, sweating, SUDS reported as 100.
+- Therapist/Output: Therapist: 'What’s your SUDS right now?' → Client: '100.' → Therapist: 'You’re doing great — keep going. Remember, it’s just a memory; you’re safe here.'
+- Notes: Prompt occurs within 5 sec of pause; no delay for regulation unless SUDS remains ≥ 90 after 15 sec.
 
 ### Example 2
 
-- Client/Input: Client: '100.'
-- Therapist/Output: Therapist: 'That’s completely expected at this part — let’s stay right here for 30 more seconds, then check again.'
-- Notes: Normalization + time-bound continuation directive
-
-### Example 3
-
-- Client/Input: Client: '70.'
-- Therapist/Output: Therapist: 'I know how hard that was — you did a great job. Are you ready to try that part again?'
-- Notes: Validation + explicit invitation to repeat
-
-## Objective
-
-Anchor exposure delivery to client’s subjective distress level to maintain therapeutic window and prevent overwhelm.
-## Applicable Signals
-
-- SUDS ≥70 during memory narration
-- physiological signs of arousal (tearfulness, sweating, shallow breathing)
-- narrative pause longer than 5 seconds without prompting
-
-## Contraindications
-
-- Client refuses SUDS self-reporting
-- Client is dissociated or non-responsive
-- SUDS scale has not been previously calibrated with the client
-
-## Intervention Moves
-
-- eliciting SUDS with open timing ('What’s your SUDS right now?')
-- normalizing the rating ('That’s expected at this point')
-- linking rating to action ('You’re at 100 — let’s stay here for 30 more seconds before checking again')
-
-## Workflow Steps
-
-- 1. Elicit current SUDS rating using standardized 0–100 scale
-- 2. Acknowledge and normalize the rating in relation to exposure phase
-- 3. Observe behavioral and physiological cues for congruence
-- 4. Verbally name the rating and explicitly state the next micro-action (continue, pause, repeat, or ground)
-- 5. Confirm client’s capacity to proceed (e.g., 'Are you ready to keep going?')
-
-## Constraints
-
-- Must occur only after SUDS scale has been introduced and practiced in prior session(s)
-- SUDS check must be timed mid-narrative—not only at start/end
-- No interpretation beyond normalization and action-linking; avoid reassurance or premature reframing
-
-## Cautions
-
-- Avoid interpreting SUDS as 'progress' or 'failure'; treat it solely as pacing data
-- Do not override client’s expressed inability to continue, even if SUDS is <70
-- If SUDS drops rapidly (<30 sec), verify grounding status before proceeding
-
-## Output Contract
-
-- Therapist names the SUDS value, normalizes it, and explicitly links next action — and client resumes narrative or confirms readiness.
-
-## Example Therapist Responses
-
-### Example 1
-
-- Client/Input: Client: 'The truck hits us on the back left side door... (pauses, sweating)'
-- Therapist/Output: Therapist: 'What’s your SUDS right now?'
-- Notes: SUDS elicitation triggered by pause + physiological cue
-
-### Example 2
-
-- Client/Input: Client: '100.'
-- Therapist/Output: Therapist: 'That’s completely expected at this part — let’s stay right here for 30 more seconds, then check again.'
-- Notes: Normalization + time-bound continuation directive
-
-### Example 3
-
-- Client/Input: Client: '70.'
-- Therapist/Output: Therapist: 'I know how hard that was — you did a great job. Are you ready to try that part again?'
-- Notes: Validation + explicit invitation to repeat
+- Client/Input: Client says 'I can’t go on' after SUDS 70, tearful but oriented.
+- Therapist/Output: Therapist: 'I know how hard that was — you did a great job staying with it so far. Would you like to try continuing from where you left off?'
+- Notes: Reinforcement precedes invitation; avoids pressure while preserving exposure frame.
 
 ## Files
 
@@ -176,9 +100,9 @@ Anchor exposure delivery to client’s subjective distress level to maintain the
 
 ## Triggers
 
-- Client provides a SUDS rating ≥70 mid-exposure
-- Client pauses or shows physiological arousal (sweating, tearfulness)
-- Therapist observes incongruence between reported SUDS and behavioral cues
+- Client reports SUDS ≥ 70 during memory narration
+- Client pauses mid-narrative with visible distress (sweating, tearfulness)
+- Therapist observes physiological arousal cues
 
 ## Examples
 
@@ -186,40 +110,26 @@ Anchor exposure delivery to client’s subjective distress level to maintain the
 
 Input:
 
-  Client: 'The truck hits us on the back left side door... (pauses, sweating)'
+  Client pauses mid-narrative, sweating, SUDS reported as 100.
 
 Output:
 
-  Therapist: 'What’s your SUDS right now?'
+  Therapist: 'What’s your SUDS right now?' → Client: '100.' → Therapist: 'You’re doing great — keep going. Remember, it’s just a memory; you’re safe here.'
 
 Notes:
 
-  SUDS elicitation triggered by pause + physiological cue
+  Prompt occurs within 5 sec of pause; no delay for regulation unless SUDS remains ≥ 90 after 15 sec.
 
 ### Example 2
 
 Input:
 
-  Client: '100.'
+  Client says 'I can’t go on' after SUDS 70, tearful but oriented.
 
 Output:
 
-  Therapist: 'That’s completely expected at this part — let’s stay right here for 30 more seconds, then check again.'
+  Therapist: 'I know how hard that was — you did a great job staying with it so far. Would you like to try continuing from where you left off?'
 
 Notes:
 
-  Normalization + time-bound continuation directive
-
-### Example 3
-
-Input:
-
-  Client: '70.'
-
-Output:
-
-  Therapist: 'I know how hard that was — you did a great job. Are you ready to try that part again?'
-
-Notes:
-
-  Validation + explicit invitation to repeat
+  Reinforcement precedes invitation; avoids pressure while preserving exposure frame.

@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-23T09:02:27+00:00",
+  "generated_at": "2026-04-22T03:12:11+00:00",
   "family_name": "心理动力学",
-  "skill_id": "7d2bcb6c-901a-5948-9b3d-17449e28ee9b",
+  "skill_id": "7b793b24-2774-528a-b07e-3076f8eb29de",
   "skill_name": "心理动力学四阶段咨询框架",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework",
         "asset_level": 1,
         "visible_role": "parent",
-        "objective": "提供跨阶段、可复用的心理动力学咨询主干流程",
-        "task_family": "心理咨询流程设计",
-        "method_family": "Psychodynamic（心理动力学）",
-        "stage": "全程规划",
+        "objective": "提供跨阶段、可复用的心理动力学治疗结构",
+        "task_family": "treatment_planning",
+        "method_family": "psychodynamic",
+        "stage": "multi_session",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "a6350ebd-1f7d-5d5f-82bc-4fdbf0a3c8e3",
         "window_strategy": "strict",
         "anchor_hits": [

@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T16:45:49+00:00",
+  "generated_at": "2026-03-26T20:29:06+00:00",
   "family_name": "行为主义",
-  "skill_id": "0a884e5f-62e0-5279-9197-a56041ec01b5",
+  "skill_id": "3d62713c-31c0-5c83-b8db-cd659323a061",
   "skill_name": "放松训练联合积极意象干预",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework/session_framework",
         "asset_level": 2,
         "visible_role": "parent",
-        "objective": "通过经典条件反射原理消退原有焦虑-口吃联结，建立放松-流畅表达的新联结",
+        "objective": "通过经典条件反射原理重构情绪反应",
         "task_family": "行为矫正",
         "method_family": "行为主义",
-        "stage": "咨询中期实施阶段",
+        "stage": "情绪调节与反应替代",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "b9f1dc37-77e2-52d4-addc-11b8f5f2f29c",
         "window_strategy": "strict",
         "anchor_hits": [
@@ -51,8 +52,8 @@
         "parent_heading": "",
         "sibling_headings": [
           "一、一般资料",
-          "# 三、评估与诊断",
-          "# 点评",
+          "三、评估与诊断",
+          "第五、六次咨询",
           "# 四、咨询目标的制定",
           "# 五、咨询方案的制定",
           "# 七、咨询效果评估"

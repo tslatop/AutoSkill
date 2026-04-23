@@ -1,13 +1,13 @@
 # 基于精神分析的虚拟现实暴露疗法（PVRE） Evidence
 
 - family: 心理动力学
-- skill_id: f116da91-31f0-5cea-a154-ed7087855ba8
+- skill_id: b730f080-4027-5ee6-917c-be4fc78eced9
 - support_count: 1
 
 ## Evidence 1
 
 - support_id: 638a4211-71e4-5026-a385-f9ed12093461
-- relation_type: case_variant
+- relation_type: support
 - document: 基于精神分析的虚拟现实暴露疗法以社交焦虑的自助干预为例.md
 - doc_id: ea17487c-e9a4-5c41-b34a-73258a84ef9a
 - source_file: /Users/panc/AutoSkill/Psy_markdown/pdt/基于精神分析的虚拟现实暴露疗法以社交焦虑的自助干预为例.md

@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T13:19:08+00:00",
+  "generated_at": "2026-04-23T04:39:08+00:00",
   "family_name": "后现代主义",
-  "skill_id": "f56e6bac-cd33-5172-862c-cdc2170dd17f",
+  "skill_id": "0d8391bf-aee3-540b-8f47-8d9a45ece599",
   "skill_name": "SFBT首次咨询结构化开场",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework/session_framework",
         "asset_level": 2,
         "visible_role": "parent",
-        "objective": "建立合作性咨访关系并明确咨询方向",
+        "objective": "建立合作性咨访关系并锚定咨询目标",
         "task_family": "initial_session",
         "method_family": "postmodernist",
         "stage": "engagement",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "945764fc-0127-550f-857b-8310ff495fd1",
         "window_strategy": "strict",
         "anchor_hits": [

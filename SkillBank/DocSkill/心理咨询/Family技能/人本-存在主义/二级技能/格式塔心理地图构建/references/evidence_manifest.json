@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T15:15:05+00:00",
+  "generated_at": "2026-04-21T15:23:03+00:00",
   "family_name": "人本-存在主义",
-  "skill_id": "08d7fce5-0631-5187-aa47-9520fb3599ef",
+  "skill_id": "9499689b-20ea-5a46-9659-d7f464f18f58",
   "skill_name": "格式塔心理地图构建",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework/session_framework",
         "asset_level": 2,
         "visible_role": "parent",
-        "objective": "识别未完成事件与核心需求",
+        "objective": "识别核心未完成事件与未被满足的心理需求",
         "task_family": "case_formulation",
-        "method_family": "格式塔疗法",
-        "stage": "系统探索",
+        "method_family": "人本-存在主义",
+        "stage": "中期评估",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "f882b9a9-1774-5f64-9bc6-04f455c6b425",
         "window_strategy": "strict",
         "anchor_hits": [
@@ -48,12 +49,11 @@
         ],
         "parent_heading": "",
         "sibling_headings": [
-          "格式塔疗法改善大学生亲密关系问题1例_吴玉芝.md",
-          "格式塔疗法改善大学生亲密关系问题丨例",
           "1案例描述",
           "2个案概念化及评估",
           "3咨询目标与方案",
-          "5咨询效果评估"
+          "5咨询效果评估",
+          "6讨论"
         ],
         "subsection_headings": [
           "4.1第一阶段：觉察与感知（第1\\~2次咨询）",

@@ -1,7 +1,7 @@
 # 自由联想引导 Evidence
 
 - family: 心理动力学
-- skill_id: b53b1318-47d6-57d9-9c48-2356acaa80b3
+- skill_id: 897d86df-a384-5707-a691-e78e1d44d1c0
 - support_count: 1
 
 ## Evidence 1

@@ -6,7 +6,7 @@ version: "0.1.0"
 tags:
   - "心理咨询"
   - "kind:domain_root"
-  - "profile:psychology::心理动力学"
+  - "profile:psychology::后现代主义"
   - "axis:疗法"
 triggers:
   - "心理咨询"
@@ -20,11 +20,11 @@ triggers:
 ## Prompt
 
 ## Family目录
-- [人本-存在主义](心理咨询/Family技能/人本-存在主义/总技能/SKILL.md) ｜ 已同步技能数：11
-- [后现代主义](心理咨询/Family技能/后现代主义/总技能/SKILL.md) ｜ 已同步技能数：19
-- [心理动力学](心理咨询/Family技能/心理动力学/总技能/SKILL.md) ｜ 已同步技能数：16
-- [行为主义](心理咨询/Family技能/行为主义/总技能/SKILL.md) ｜ 已同步技能数：20
-- [认知行为疗法](心理咨询/Family技能/认知行为疗法/总技能/SKILL.md) ｜ 已同步技能数：74
+- [人本-存在主义](心理咨询/Family技能/人本-存在主义/总技能/SKILL.md) ｜ 已同步技能数：6
+- [后现代主义](心理咨询/Family技能/后现代主义/总技能/SKILL.md) ｜ 已同步技能数：9
+- [心理动力学](心理咨询/Family技能/心理动力学/总技能/SKILL.md) ｜ 已同步技能数：17
+- [行为主义](心理咨询/Family技能/行为主义/总技能/SKILL.md) ｜ 已同步技能数：11
+- [认知行为疗法](心理咨询/Family技能/认知行为疗法/总技能/SKILL.md) ｜ 已同步技能数：68
 
 ## 选用规则（各 Family）
 - 优先根据文档中明确的方法学术语、章节主题和任务目标进入对应 family。

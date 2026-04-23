@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-23T09:02:27+00:00",
+  "generated_at": "2026-04-22T03:12:11+00:00",
   "family_name": "心理动力学",
-  "skill_id": "c578371b-cd10-5424-a584-bae5115d3db9",
+  "skill_id": "60354b62-601f-5456-8a6f-50b3e00e6fa6",
   "skill_name": "不合理信念现场验证实验",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework/session_framework/micro_intervention",
         "asset_level": 3,
         "visible_role": "leaf",
-        "objective": "disconfirm irrational beliefs about social evaluation",
+        "objective": "修正核心自动思维",
         "task_family": "cognitive restructuring",
         "method_family": "CBT",
-        "stage": "belief modification",
+        "stage": "belief disconfirmation",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 2,
         "window_id": "ccbfb47a-7753-5770-9ba8-c5e14dee42e9",
         "window_strategy": "strict",
         "anchor_hits": [

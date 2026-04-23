@@ -1,7 +1,7 @@
 # 存在主义-认知整合三阶段咨询框架 Evidence
 
 - family: 人本-存在主义
-- skill_id: 9ffbd46e-b454-5d27-9f17-dfbbe5be4aac
+- skill_id: c4739b69-9fef-5d23-baa8-5627ee98fb9c
 - support_count: 1
 
 ## Evidence 1
@@ -13,7 +13,7 @@
 - source_file: /Users/panc/AutoSkill/Psy_markdown/het/对大学生生命观的个案干预研究.md
 - section: 2案例分析与咨询过程
 - span: 1750:3154
-- confidence: 0.98
+- confidence: 0.95
 - quote: 法和认知疗法相结合的综合疗法，改变来访者对自己和世界的基本看法，在此基础上通过实践改变拖延的行为特征，最终达到认知和行为的改变.
 
 2.4咨询过程

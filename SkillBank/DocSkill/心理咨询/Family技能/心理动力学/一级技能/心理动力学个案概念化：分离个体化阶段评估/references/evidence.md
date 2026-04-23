@@ -1,7 +1,7 @@
 # 心理动力学个案概念化：分离个体化阶段评估 Evidence
 
 - family: 心理动力学
-- skill_id: c2c82681-01ea-51de-9693-a4a644789927
+- skill_id: bce2e897-34bc-5766-9789-63a9de6c8c00
 - support_count: 1
 
 ## Evidence 1

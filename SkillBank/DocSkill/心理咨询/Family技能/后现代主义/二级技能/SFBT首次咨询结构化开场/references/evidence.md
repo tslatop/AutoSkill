@@ -1,7 +1,7 @@
 # SFBT首次咨询结构化开场 Evidence
 
 - family: 后现代主义
-- skill_id: f56e6bac-cd33-5172-862c-cdc2170dd17f
+- skill_id: 0d8391bf-aee3-540b-8f47-8d9a45ece599
 - support_count: 1
 
 ## Evidence 1

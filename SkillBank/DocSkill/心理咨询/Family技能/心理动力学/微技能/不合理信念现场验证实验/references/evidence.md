@@ -1,7 +1,7 @@
 # 不合理信念现场验证实验 Evidence
 
 - family: 心理动力学
-- skill_id: c578371b-cd10-5424-a584-bae5115d3db9
+- skill_id: 60354b62-601f-5456-8a6f-50b3e00e6fa6
 - support_count: 1
 
 ## Evidence 1

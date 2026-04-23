@@ -1,7 +1,7 @@
 # 系统脱敏法分阶暴露流程 Evidence
 
 - family: 行为主义
-- skill_id: 62d8aa9c-6c63-5a15-a29f-cfbff3e062bf
+- skill_id: 8cc51575-33a5-547e-abf0-5886c3a6c615
 - support_count: 1
 
 ## Evidence 1

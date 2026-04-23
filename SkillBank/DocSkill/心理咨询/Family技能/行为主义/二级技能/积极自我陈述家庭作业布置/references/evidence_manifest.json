@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T16:45:49+00:00",
+  "generated_at": "2026-03-26T20:29:06+00:00",
   "family_name": "行为主义",
-  "skill_id": "76580342-f205-533b-b3d2-a64ab5483c41",
+  "skill_id": "0bcd7759-bd81-56a6-99a1-5c0005ef214e",
   "skill_name": "积极自我陈述家庭作业布置",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework/session_framework",
         "asset_level": 2,
         "visible_role": "parent",
-        "objective": "巩固认知重建成果并增强积极自我图式可及性",
+        "objective": "通过高频、具身化、可记录的言语与行为练习，巩固认知重建成果并促进内化",
         "task_family": "认知巩固",
         "method_family": "CBT",
-        "stage": "homework_assignment",
+        "stage": "中期干预",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 3,
         "window_id": "18e6a15d-2196-591a-985a-072b50388579",
         "window_strategy": "strict",
         "anchor_hits": [

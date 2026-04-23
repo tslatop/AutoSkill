@@ -1,7 +1,7 @@
 # 心理动力学四阶段咨询框架 Evidence
 
 - family: 心理动力学
-- skill_id: 7d2bcb6c-901a-5948-9b3d-17449e28ee9b
+- skill_id: 7b793b24-2774-528a-b07e-3076f8eb29de
 - support_count: 1
 
 ## Evidence 1

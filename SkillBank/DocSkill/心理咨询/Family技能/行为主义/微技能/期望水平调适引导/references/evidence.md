@@ -1,7 +1,7 @@
 # 期望水平调适引导 Evidence
 
 - family: 行为主义
-- skill_id: 274a97c7-3923-5544-b249-8e7ddd598ea7
+- skill_id: 4f2309c9-a40b-5074-8f8a-29ffad8618f1
 - support_count: 1
 
 ## Evidence 1

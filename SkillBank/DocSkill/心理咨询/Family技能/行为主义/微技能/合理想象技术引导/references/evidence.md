@@ -1,7 +1,7 @@
 # 合理想象技术引导 Evidence
 
 - family: 行为主义
-- skill_id: 2b0ce85f-352b-5f5b-8cea-93cd83b1cef0
+- skill_id: c8debf3b-df8d-5a0c-8cf5-3798027fd52e
 - support_count: 1
 
 ## Evidence 1
@@ -13,7 +13,7 @@
 - source_file: /Users/panc/AutoSkill/Psy_markdown/bt/大学生考试焦虑的心理咨询案例分析_余乐.md
 - section: 大学生考试焦虑的心理咨询案例分析
 - span: 2456:3162
-- confidence: 0.97
+- confidence: 0.93
 - quote: 来访者：我现在觉得这两次没考好也不能说明什么，毕竟离考研还有一段时间，我应该向前看，目前应调整好自己的心态才行。
 
 (4）布置作业

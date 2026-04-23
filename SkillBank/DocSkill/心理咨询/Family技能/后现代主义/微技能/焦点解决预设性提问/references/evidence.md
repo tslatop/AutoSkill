@@ -1,7 +1,7 @@
 # 焦点解决预设性提问 Evidence
 
 - family: 后现代主义
-- skill_id: 56c39166-7e12-5eb7-85c2-b6d8df814ffa
+- skill_id: 7b1db88f-7b3e-5cbe-afea-95f1b50a9ea3
 - support_count: 1
 
 ## Evidence 1

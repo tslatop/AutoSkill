@@ -1,7 +1,7 @@
 # OH卡三步抽卡引导法 Evidence
 
 - family: 后现代主义
-- skill_id: 34a12d6e-3a62-51ec-a025-2b0e7fcfba6f
+- skill_id: 5a63607b-816d-59af-aa8f-e0460ad67119
 - support_count: 1
 
 ## Evidence 1

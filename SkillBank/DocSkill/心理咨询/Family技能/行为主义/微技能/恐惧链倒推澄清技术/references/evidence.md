@@ -1,7 +1,7 @@
 # 恐惧链倒推澄清技术 Evidence
 
 - family: 行为主义
-- skill_id: 9ded3bbe-943c-5dbf-8f3e-9d1dde0de230
+- skill_id: bb482fb7-91c9-567c-8496-553b4a9a4879
 - support_count: 1
 
 ## Evidence 1

@@ -1,7 +1,7 @@
 # 积极自我陈述家庭作业布置 Evidence
 
 - family: 行为主义
-- skill_id: 76580342-f205-533b-b3d2-a64ab5483c41
+- skill_id: 0bcd7759-bd81-56a6-99a1-5c0005ef214e
 - support_count: 1
 
 ## Evidence 1

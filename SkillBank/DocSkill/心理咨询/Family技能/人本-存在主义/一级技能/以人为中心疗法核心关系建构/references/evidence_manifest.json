@@ -1,11 +1,72 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T15:15:05+00:00",
+  "generated_at": "2026-04-21T15:23:03+00:00",
   "family_name": "人本-存在主义",
-  "skill_id": "71176cfe-31e6-544f-8773-b7b68c4837d9",
+  "skill_id": "2c230623-3688-59b4-93b9-736843808845",
   "skill_name": "以人为中心疗法核心关系建构",
   "support_count": 2,
   "supports": [
+    {
+      "support_id": "c8ddb663-f73c-59fe-8d18-1ffb4e7a4c15",
+      "doc_id": "5d4b791c-839b-52ee-889b-c9615e3ce6a5",
+      "document_title": "1例大学生自我探索成长的心理咨询案例报告_李爽.md",
+      "source_file": "/Users/panc/AutoSkill/Psy_markdown/het/1例大学生自我探索成长的心理咨询案例报告_李爽.md",
+      "section": "4咨询方案与咨询目标",
+      "span": {
+        "start": 5964,
+        "end": 6393
+      },
+      "relation_type": "support",
+      "confidence": 0.95,
+      "quote": "4.1理论依据\n本次咨询使用了以人为中心疗法的理论来帮助来访者进行情感及个人成长探索。以人为中心疗法认为来访者能够理解自己生活中存在的会使自己不愉快的因素，他们有能力进行自我指导并做出建设性的改变。该疗法十分重视咨询师与来访者之间的关系，咨询师需要建立一个真诚、接纳、理解性的关系，鼓励来访者利用咨询关系去释放自己的成长潜力并逐渐成为自己想要成为的人[5]。\n\n4.2咨询目标\n短期目标：通过建立良好的咨询关系，在情感上给予来访者支持，帮助来访者降低负面情绪感受，对自我的经验感受能有更多容许和接纳，有更积极的生活方式，给予自己生命的滋养。\n\n长期目标：促进来访者的人格健全和发展，促进来访者的自我实现，进行能为自己负责任的、自由选择的、适应环境的、有效能的生活。\n\n4.3咨询方法\n咨询师在此次咨询中将重点放在咨询关系上。认真地倾听、全身心地投入到咨询中，努力创造安全、温暖、接纳的氛围，同时设身处地地去了解来访者的感受，协助来访者进行自我表达和自我探索。",
+      "metadata": {
+        "document_title": "1例大学生自我探索成长的心理咨询案例报告_李爽.md",
+        "domain": "psychology",
+        "extraction_unit": "window",
+        "skill_name": "以人为中心疗法核心关系建构",
+        "asset_type": "safety_rule",
+        "granularity": "session",
+        "asset_node_id": "treatment_framework",
+        "asset_path": "family_root/treatment_framework",
+        "asset_level": 1,
+        "visible_role": "parent",
+        "objective": "建立支持性治疗联盟以激活来访者内在成长动力",
+        "task_family": "关系建构",
+        "method_family": "人本-存在主义",
+        "stage": "初始阶段",
+        "domain_type": "psychology",
+        "taxonomy_id": "psychology",
+        "candidate_slot": 1,
+        "window_id": "d2eabbf5-4b9d-5859-b24e-6b8301749c7f",
+        "window_strategy": "strict",
+        "anchor_hits": [
+          "咨询目标"
+        ],
+        "paragraph_start": 0,
+        "paragraph_end": 3,
+        "heading_path": [
+          "4咨询方案与咨询目标"
+        ],
+        "parent_heading": "",
+        "sibling_headings": [
+          "1 个案信息",
+          "2 个案心理问题评估",
+          "3 个案概念化",
+          "5 咨询过程",
+          "6咨询效果及评价反思",
+          "7“以人为中心疗法”理论的贡献与局限"
+        ],
+        "subsection_headings": [
+          "4.1理论依据",
+          "4.2咨询目标",
+          "4.3咨询方法"
+        ],
+        "context_snippets": [],
+        "heading_number": "",
+        "heading_kind": "outline_llm",
+        "section_summary": "本次咨询使用了以人为中心疗法的理论来帮助来访者进行情感及个人成长探索。以人为中心疗法认为来访者能够理解自己生活中存在的会使自己不愉快的因素，他们有能力进行自我指导并做出建设性的改变。该疗法十分重视咨询师与来访者之间的关系，咨询师需要建立一个真诚、接纳、理解性的关系，鼓励来访者利用咨询关系去释放自己的成长潜力并逐渐成为自己想要成为的人[5]。"
+      }
+    },
     {
       "support_id": "7aa2a93c-74ff-5f63-99b4-9fa6ac65daca",
       "doc_id": "20da7e44-53d5-5125-8ce0-29795820e0e9",
@@ -24,8 +85,8 @@
         "domain": "psychology",
         "extraction_unit": "window",
         "skill_name": "以人为中心疗法核心关系建构",
-        "asset_type": "macro_protocol",
-        "granularity": "macro",
+        "asset_type": "safety_rule",
+        "granularity": "session",
         "asset_node_id": "treatment_framework",
         "asset_path": "family_root/treatment_framework",
         "asset_level": 1,
@@ -36,6 +97,7 @@
         "stage": "全程基础",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "131d7e40-49c9-58dd-b21a-287d0831b86e",
         "window_strategy": "strict",
         "anchor_hits": [],
@@ -62,60 +124,6 @@
         "heading_number": "",
         "heading_kind": "outline_llm",
         "section_summary": "共同确定咨询目标："
-      }
-    },
-    {
-      "support_id": "d434fdf8-4b5d-5a90-81d7-bd1dee09f002",
-      "doc_id": "f9efd963-a5c6-5935-aa24-e3d5860b934a",
-      "document_title": "一例职业选择心理咨询案例报告_侯睿.md",
-      "source_file": "/Users/panc/AutoSkill/Psy_markdown/het/一例职业选择心理咨询案例报告_侯睿.md",
-      "section": "# 3咨询方案",
-      "span": {
-        "start": 3892,
-        "end": 5263
-      },
-      "relation_type": "support",
-      "confidence": 0.95,
-      "quote": "主要咨询方法与适用原理：\n\n（1)来访者中心疗法的要点如下：人都有能力发现自己的缺陷和不足,并加以改造。所以心理咨询的目的,不在于操纵一个人的外界环境或消极被动的人格，而在于协助来询者自省自误，最终达到自我的实现。\n\n(2)人都有两个自我即现实自我和理想自我。其中前者是个人在现实生活中获得的自我感觉，后者是个人对“应该是”和\"必须是”等的自我概念。两者之间的冲突导致了人的心理失常，人在交往中获得肯定越多，其自我冲突越少，人格发展也就越正常。\n\n(3)在操作技巧上，这一疗法反对操纵或支配来询者，主场在谈话中采取不指责，不评论，不干涉的方式，鼓励来询者言尽其意，直抒己见，一创建一个充满真诚，温暖和信任的气氛，使来询者无忧无虑地开放自我。\n\n4咨询师的反思在为小王咨询的过程中，虽然认同小王父亲的想法，但是没有表现出对她父母想法的支持，要求小王不要对父亲的完全抵触，让她意识到，她的抵触情绪只会让她的父母态度更加坚决。在为小王咨询的过程中，我采用了“来询者中心疗法”，我相信小王有能力实现自己的梦想，也相信小王的父母可以理解女儿的志向。我在帮助小王认清自我的同时，帮助她摒弃对父亲的成见，尊重父亲的智慧和阅历，积极与父亲沟通。\n\n为了小王能与她父母沟通思想，我分别在咨询中扮演了她和她父母的角色，向她展示怎样沟通能取得更好的效果，增强小王与她父亲沟通的技巧与雄起，这一切的努力最终让她说服她的父母，允许她先尝试再做打算。在这一过程中，小王学会了尊重父母，相信父母，这种情感也促使她父母对她投桃报李，坦诚相待。\n\n由此,小王不但坚定了自己的梦想，更增进了与父母的情谊，可谓一石二鸟，能达成这个圆满的结局，就在于我在咨询过程中，从未支持过双方的任何一方，这既是咨询给小王带来的收获，也为我增加了咨询的经验。\n\n# 参考文献\n\n[1] 中国就业指导中心，中国心理卫生协会组织编写.心理咨询师（二级),民族出版社，2005年8月初版.  \n[2] 中国就业指导中心，中国心理卫生协会组织编写.心理咨询师（三级），民族出版社，2005年8月初版.\n\n# 2型糖尿病患者抑郁的患病率及其危险因素李小燕（成都市第四人民医院四川 成都610000）\n\n摘要：目的：分析2型糖尿病患者抑郁的患病率及其危险因素。方法：回顾分析在我院就诊且接受治疗的96例2型糖尿病患者的资料，计算并统计不同年龄、性别、病程、婚姻史、家族史,BMI和并发症数量等患者的抑郁患病率。结果：96例患者中，有28例患者诊断为抑郁，抑郁发生率为29. $1 7 \\%$ ，不同性别，病程和并发症数量的2型糖尿病患者抑郁患病率差异具有显著性 $\\cdot P { < } 0 . \\ : 0 5 )$ 。结论：女性、病程长和并发症数量多的2型糖尿病患者，抑郁患病率相对较高，应引起临床医生和患者的充分重视，尽早采取有效措施进行防治。\n\n关键词：2型糖尿病；危险因素；抑郁；患病率【中图分类号】R473 【文献标识码】\n\n糖尿病主要包括1型糖尿病和2型糖尿病等类型。其中2型糖尿病是一种以糖代谢障碍为主的疾病，多发于中老年人，但伴随生活模式的转变,2型糖尿病渐呈年轻化趋势[1]。我科结合现有临床资料，对2型糖尿病患者抑郁的患病率及其危险因素进行了深入分析，现将相关经验和观察结果汇报如下。",
-      "metadata": {
-        "document_title": "一例职业选择心理咨询案例报告_侯睿.md",
-        "domain": "psychology",
-        "extraction_unit": "window",
-        "skill_name": "来访者中心疗法核心原则",
-        "asset_type": "macro_protocol",
-        "granularity": "macro",
-        "asset_node_id": "treatment_framework",
-        "asset_path": "family_root/treatment_framework",
-        "asset_level": 1,
-        "visible_role": "parent",
-        "objective": "建立以来访者为主体的成长性咨询关系框架",
-        "task_family": "自我认同发展",
-        "method_family": "人本-存在主义",
-        "stage": "初始评估与关系建立",
-        "domain_type": "psychology",
-        "taxonomy_id": "psychology",
-        "window_id": "d7edae2b-bddb-58c9-a145-6c63766fde52",
-        "window_strategy": "strict",
-        "anchor_hits": [],
-        "paragraph_start": 0,
-        "paragraph_end": 12,
-        "heading_path": [
-          "# 3咨询方案"
-        ],
-        "parent_heading": "",
-        "sibling_headings": [
-          "# 1资料与方法",
-          "# 2结果",
-          "# 3讨论",
-          "# 1资料整理",
-          "# 2诊断与鉴别诊断",
-          "# 1资料与方法"
-        ],
-        "subsection_headings": [],
-        "context_snippets": [],
-        "heading_number": "",
-        "heading_kind": "outline_llm",
-        "section_summary": "主要咨询方法与适用原理："
       }
     }
   ]

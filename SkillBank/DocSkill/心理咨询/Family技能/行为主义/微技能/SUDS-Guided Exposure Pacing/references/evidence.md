@@ -1,7 +1,7 @@
 # SUDS-Guided Exposure Pacing Evidence
 
 - family: 行为主义
-- skill_id: 592c48dd-573b-5d92-a52d-03ac86a21c79
+- skill_id: 76248048-585c-5cef-8059-4b12e8325e9f
 - support_count: 1
 
 ## Evidence 1
@@ -13,7 +13,7 @@
 - source_file: /Users/panc/AutoSkill/Psy_markdown/bt/Terry,a42-year-oldEarthquake.md
 - section: # Excerpt From an In-Session Imaginal Exposure
 - span: 4168:12793
-- confidence: 0.97
+- confidence: 0.95
 - quote: The following case example is an excerpt from an imaginal exposure with a client who was in a motor vehicle accident with his wife and young child, in which his child was killed.
 
 Although only part of the exposure is provided,when conducting imaginal exposures in sesson,the exposure should be conducted until the end of the memory and repeated for at least 45 to 6O minutes.The example below was the first imaginal exposure conducted with this client. With the first exposure it is common for a client's SUDS rating to be elevated throughout the entire memory.With repetition during the session,as wellas across several sessions,the memory willelicit lower distress ratings and it willtake a shorter duration to have the distress rating reduce across the exposure.

@@ -1,68 +1,11 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T13:19:09+00:00",
+  "generated_at": "2026-04-23T04:39:08+00:00",
   "family_name": "后现代主义",
-  "skill_id": "374ad44e-4f75-5553-94c5-77b575a5c3cc",
+  "skill_id": "396ba77c-3e48-5cc3-8242-088280bd7d11",
   "skill_name": "叙事疗法三阶段工作框架",
-  "support_count": 3,
+  "support_count": 1,
   "supports": [
-    {
-      "support_id": "2a51522b-a730-55f4-84e9-e295c8ff4d09",
-      "doc_id": "465bde46-0d00-5a0d-9f88-bf36f270fc24",
-      "document_title": "tppc20230509756-763.md",
-      "source_file": "/Users/panc/AutoSkill/Psy_markdown/pmt/tppc20230509756-763.md",
-      "section": "6 咨询过程",
-      "span": {
-        "start": 4428,
-        "end": 5725
-      },
-      "relation_type": "support",
-      "confidence": 0.98,
-      "quote": "# 6.1　第一阶段\n\n目标：诊断评估与咨询关系建立、主线故事建立，澄清问题、澄清渴望（前3次）。\n\n方法： $\\textcircled{1}$ 通过呼吸放松和冥想正念，帮助A缓解应激反应； $\\textcircled{2}$ 通过陪伴、倾听、共情，建立良好信任的咨访关系； $\\textcircled{3}$ 让主线故事尽情流淌，看见A成长中的不易； $\\textcircled{4}$ 把问题客体化，将问题和自我认同分开，解除消极的自我认同,降低挫败感。主要解决焦虑的感觉是怎么找上自己的？经历了哪些困难、挣扎、努力？焦虑的影响？一起探讨焦虑怎样让A对自己产生了消极的自我认同。外化对话为下一阶段的改写对话奠定基础； $\\textcircled{5}$ 评估状态，确立咨询目标和方案。通过让A描述焦虑的说话方式，描述焦虑建立优势地位的策略，描述焦虑控制A情绪和行为的策略，根据这些描述确定咨询计划。\n\n# 6.2　第二阶段\n\n目标：解构聆听与问话，分析问题、找出根源、解决问题（第4—8次）。\n\n# 6.3　第三阶段\n\n目标：串联被丰富的故事,建立新的故事,形成新的价值,强壮自我认同,巩固与结束（第9—11次）。\n\n方法： $\\textcircled{1}$ 重塑成员的对话，让来访者感恩母亲的付出，尝试与父亲和解，理解父亲的无奈与不容易，愿意以更积极的态度来与父亲情感链接； $\\textcircled{2}$ 采用时空见证的对话来强壮来访者的自我认同，找到自己的资源、力量和优势，接纳自己的价值，认识到自己是有能力、有价值的； $\\textcircled{3}$ 尝试发泄情绪和写情绪日记自我疗愈的方法，与咨询师一起探讨人际交往技巧、时间管理策略，对现有学习生活进行具体的规划等，采取行动减少焦虑的影响，追寻生命中真正重要的事物。",
-      "metadata": {
-        "document_title": "tppc20230509756-763.md",
-        "domain": "psychology",
-        "extraction_unit": "window",
-        "skill_name": "叙事疗法三阶段宏观框架",
-        "asset_type": "macro_protocol",
-        "granularity": "macro",
-        "asset_node_id": "treatment_framework",
-        "asset_path": "family_root/treatment_framework",
-        "asset_level": 1,
-        "visible_role": "parent",
-        "objective": "提供跨会话的阶段性治疗蓝图",
-        "task_family": "叙事干预",
-        "method_family": "后现代主义",
-        "stage": "multi-session",
-        "domain_type": "psychology",
-        "taxonomy_id": "psychology",
-        "window_id": "f1312989-a523-5336-82f4-6c621477b655",
-        "window_strategy": "strict",
-        "anchor_hits": [
-          "阶段",
-          "咨询目标"
-        ],
-        "paragraph_start": 0,
-        "paragraph_end": 8,
-        "heading_path": [
-          "6 咨询过程"
-        ],
-        "parent_heading": "",
-        "sibling_headings": [
-          "一例叙事疗法对学业焦虑的干预报告",
-          "1 背景",
-          "2个案概念化",
-          "3 咨询方案",
-          "4 咨询目标",
-          "5 咨询方法"
-        ],
-        "subsection_headings": [],
-        "context_snippets": [],
-        "heading_number": "",
-        "heading_kind": "outline_llm",
-        "section_summary": "# 6.1　第一阶段"
-      }
-    },
     {
       "support_id": "69a15792-73ea-542f-bcdc-f9c171c4041b",
       "doc_id": "cc83dd5e-0b23-5f73-b94a-fec51028ee1c",
@@ -87,12 +30,13 @@
         "asset_path": "family_root/treatment_framework",
         "asset_level": 1,
         "visible_role": "parent",
-        "objective": "引导来访者从被文化叙事支配转向拥有自我叙事主权",
+        "objective": "引导来访者从被文化叙事定义转向主动建构自主身份",
         "task_family": "叙事治疗",
         "method_family": "后现代主义",
         "stage": "multi-session treatment flow",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "4712c061-95ed-5cc7-a9b1-a1df96ce8720",
         "window_strategy": "strict",
         "anchor_hits": [
@@ -118,58 +62,6 @@
         "heading_number": "",
         "heading_kind": "outline_llm",
         "section_summary": "从可可的个案中可以看到叙事疗法的有效性体现在以下几个方面：第一，外化技术的有效性。通过将病痛、外貌焦虑、家庭期待等命名为独立的存在（如“脱发怪”），可可能够与之对话，而非完全认同这些负面标签。第二，文化叙事的解构。帮助可可看到牺牲文化、成绩至上、过度共情等观念是社会建构的，而非绝对真理，这减轻了她的自我批判。第三，独特结果的挖掘。聚焦于她仍然坚持治疗、主动沟"
-      }
-    },
-    {
-      "support_id": "f2438728-6db1-5d0b-ab87-8296bdd1af32",
-      "doc_id": "8bd6119c-22b7-52b6-9d55-7d9e216fb8c3",
-      "document_title": "叙事治疗运用于公安院校心理咨询探析_吴夏麒.md",
-      "source_file": "/Users/panc/AutoSkill/Psy_markdown/pmt/叙事治疗运用于公安院校心理咨询探析_吴夏麒.md",
-      "section": "一、叙事治疗的内涵",
-      "span": {
-        "start": 910,
-        "end": 1939
-      },
-      "relation_type": "support",
-      "confidence": 0.98,
-      "quote": "Jill Fredman和 Gene Combs在叙事治疗—解构并重写生命的故事》中提出，叙事治疗有4个基本理论假设：第一，现实是社会建构出来的。这有别于实证主义认为世界是天然存在\"的观点；第二，现实是由语言构成的，并随着语言意义的变化而变化；第三，现实是借助叙事组成并得以维持的。叙事治疗关注主流叙事之外的生活经验,并以此为出发点重构叙事；第四，没有绝对的真理。对知识和真理的理解受到权利的控制，因权利的变化而变化。根据上述理论假设，我们可以得出在社会工作中采取叙事治疗的干预步骤和干预技巧。\n\n叙事治疗干预的第一步是解构问题，现实是被建构出来的,并且不存在绝对真理,因此问题本身并不是问题，而是被社会文化建构的。那么来访者的生活与现实产生分歧而导致所谓问题\"时，完全可以通过对现有建构的否定来去问题化”。叙事治疗认为个人与问题是分离的，即导致困境的不是来访者自己，而是问题，而问题的产生又和社会互动有关。这就要求咨询师具备将问题外在化的技能，外在化是叙事治疗的一个特殊手段，其中情节的命名是外在问题最有力的辅助手段。正如Freedman和Combs所说：外化式对话使许多人第一次体验到自己选择的责任，以问题来体验人时，人对问题无计可施，因为问题就是这个人。当问题在人外面时，他就能负起如何与问题互动的责任。”问题外化，一方面可以引导来访者意识到那些占主导地位的知识体系对自己的束缚并设法反抗；另一方面也避免了来访者把失败全部归咎于自己而带来的无助感和失望感。经由这个过程，来访者可以脱离问题的压制，减少自我污名和自责，找到问题背后的意义，明确努力的方向并提升自信，这也是咨询的增能过程。第二步是建构意义。旧有叙事解构之后，需要合理的新叙事来替代。来访者要从问题中寻找意义，找到新的故事讲述方式，挣脱旧有故事背后的权利机制，反抗主流话语权的压制，建构新的意义叙事。这里要求咨询师具备的技能是寻找独特的结果。在重构生活的时候寻找独特结果有利于促使来访者看到改变是可能的，通过描述现在的结果使来访者生活的另一面展现出来，另一条道路也随之清晰。第三步是重构生活。通过前两个步骤，来访者认识到了旧叙事的偏差，建构了新叙事，但这个阶段刚建立起来的新叙事和旧有叙事可能会互相纠缠,来访者抛弃旧有叙事也会有丧失感,因此咨询师要注意通过有效途径弥补来访者的这种丧失。例如让来访者的重要他人参与见证新叙事的建构、鼓励来访者坚持新叙事、及时发现来访者的进步以巩固新叙事的成果。",
-      "metadata": {
-        "document_title": "叙事治疗运用于公安院校心理咨询探析_吴夏麒.md",
-        "domain": "psychology",
-        "extraction_unit": "window",
-        "skill_name": "叙事治疗三步干预框架",
-        "asset_type": "macro_protocol",
-        "granularity": "macro",
-        "asset_node_id": "treatment_framework",
-        "asset_path": "family_root/treatment_framework",
-        "asset_level": 1,
-        "visible_role": "parent",
-        "objective": "提供可复用的叙事治疗整体操作路径",
-        "task_family": "叙事治疗",
-        "method_family": "后现代主义",
-        "stage": "multi-session",
-        "domain_type": "psychology",
-        "taxonomy_id": "psychology",
-        "window_id": "921163b9-3f7e-5490-9fff-b28e2244d045",
-        "window_strategy": "strict",
-        "anchor_hits": [
-          "阶段"
-        ],
-        "paragraph_start": 1,
-        "paragraph_end": 2,
-        "heading_path": [
-          "一、叙事治疗的内涵"
-        ],
-        "parent_heading": "",
-        "sibling_headings": [
-          "二、叙事疗法运用于公安院校学生心理咨询工作",
-          "三、叙事治疗运用于公安院校心理咨询案例分析"
-        ],
-        "subsection_headings": [],
-        "context_snippets": [],
-        "heading_number": "",
-        "heading_kind": "outline_llm",
-        "section_summary": "叙事治疗是基于社会建构理论而发展出来的心理咨询流派，源起于 Micheal White和David Epston 的开创性工作。David Epston最先阐发了叙说隐喻的概念，MichealWhite深受其影响，两人共同打开了叙事治疗的研究之门，他们于1990年合作出版从叙事方法到治疗终点X Narrative Means to Therapeutic E"
       }
     }
   ]

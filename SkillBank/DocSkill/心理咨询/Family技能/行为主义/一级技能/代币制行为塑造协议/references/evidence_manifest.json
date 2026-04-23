@@ -1,6 +1,6 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T16:45:49+00:00",
+  "generated_at": "2026-03-26T20:29:06+00:00",
   "family_name": "行为主义",
   "skill_id": "518e8bfb-9659-5ccd-ba66-b2491aa552d9",
   "skill_name": "代币制行为塑造协议",
@@ -36,6 +36,7 @@
         "stage": "intervention",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "5420a55d-fb13-5527-9e1f-7c1fdd9d566a",
         "window_strategy": "strict",
         "anchor_hits": [

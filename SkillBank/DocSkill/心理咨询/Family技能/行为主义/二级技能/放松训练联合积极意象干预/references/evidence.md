@@ -1,7 +1,7 @@
 # 放松训练联合积极意象干预 Evidence
 
 - family: 行为主义
-- skill_id: 0a884e5f-62e0-5279-9197-a56041ec01b5
+- skill_id: 3d62713c-31c0-5c83-b8db-cd659323a061
 - support_count: 1
 
 ## Evidence 1

@@ -1,7 +1,7 @@
 # 三维度备考准备框架 Evidence
 
 - family: 行为主义
-- skill_id: 4ab36bf0-75ee-5bd6-b81a-fd7768d10d24
+- skill_id: da49b733-2364-576d-a853-51c95127c37b
 - support_count: 1
 
 ## Evidence 1
@@ -13,7 +13,7 @@
 - source_file: /Users/panc/AutoSkill/Psy_markdown/bt/大学生考试焦虑案例分析与对策探讨.md
 - section: 2大学生考试焦虑的对策探讨
 - span: 4128:4640
-- confidence: 0.93
+- confidence: 0.91
 - quote: 2.1.2调整对自己的期望水平
 产生考试焦虑的学生往往对自己的期望水平过高，接受不了自己的失败，而实际能力有限，理想自我和现实自我出现了冲突。考试来临，当感觉自己考不到自己理想的成绩时，就会产生焦虑。这些学生应调整对自己的期望水平，允许自己失败，也允许自己有一个循序渐进的过程达到理想的成绩。
 

@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T16:45:49+00:00",
+  "generated_at": "2026-03-26T20:29:06+00:00",
   "family_name": "行为主义",
-  "skill_id": "274a97c7-3923-5544-b249-8e7ddd598ea7",
+  "skill_id": "4f2309c9-a40b-5074-8f8a-29ffad8618f1",
   "skill_name": "期望水平调适引导",
   "support_count": 1,
   "supports": [
@@ -30,12 +30,13 @@
         "asset_path": "family_root/treatment_framework/session_framework/micro_intervention",
         "asset_level": 3,
         "visible_role": "leaf",
-        "objective": "降低因过高自我期望导致的考试焦虑",
+        "objective": "调节自我期望认知",
         "task_family": "考试焦虑干预",
         "method_family": "CBT",
         "stage": "认知重构",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 1,
         "window_id": "98e83972-e0a1-5e4a-ab4f-631ff1186169",
         "window_strategy": "strict",
         "anchor_hits": [
@@ -48,7 +49,6 @@
         ],
         "parent_heading": "",
         "sibling_headings": [
-          "大学生考试焦虑案例分析与对策探讨",
           "1案例分析"
         ],
         "subsection_headings": [

@@ -1,8 +1,8 @@
 {
   "schema": "autoskill.document.evidence_manifest.v1",
-  "generated_at": "2026-03-22T13:19:09+00:00",
+  "generated_at": "2026-04-23T04:39:08+00:00",
   "family_name": "后现代主义",
-  "skill_id": "64e4124a-9a92-5185-87ef-06c06c317873",
+  "skill_id": "9e74e147-b737-5e04-bb66-7f2f84d30e43",
   "skill_name": "价值观锚定的学习意义重构",
   "support_count": 1,
   "supports": [
@@ -33,9 +33,10 @@
         "objective": "意义重构",
         "task_family": "叙事治疗",
         "method_family": "后现代主义",
-        "stage": "例外探索与意义重写",
+        "stage": "例外寻找",
         "domain_type": "psychology",
         "taxonomy_id": "psychology",
+        "candidate_slot": 3,
         "window_id": "b330674a-f45a-512e-9e47-55a35aac35e4",
         "window_strategy": "strict",
         "anchor_hits": [

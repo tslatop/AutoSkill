@@ -1,7 +1,7 @@
 # 考试意义认知重建 Evidence
 
 - family: 行为主义
-- skill_id: 5e1f4dd6-3327-5cfc-aa60-a1df5d0b9a86
+- skill_id: 7455b5ae-1edb-571f-9546-f476e226d651
 - support_count: 1
 
 ## Evidence 1
@@ -13,7 +13,7 @@
 - source_file: /Users/panc/AutoSkill/Psy_markdown/bt/大学生考试焦虑案例分析与对策探讨.md
 - section: 2大学生考试焦虑的对策探讨
 - span: 4128:4640
-- confidence: 0.97
+- confidence: 0.93
 - quote: 2.1.2调整对自己的期望水平
 产生考试焦虑的学生往往对自己的期望水平过高，接受不了自己的失败，而实际能力有限，理想自我和现实自我出现了冲突。考试来临，当感觉自己考不到自己理想的成绩时，就会产生焦虑。这些学生应调整对自己的期望水平，允许自己失败，也允许自己有一个循序渐进的过程达到理想的成绩。
 

@@ -1,7 +1,7 @@
 # 价值观锚定的学习意义重构 Evidence
 
 - family: 后现代主义
-- skill_id: 64e4124a-9a92-5185-87ef-06c06c317873
+- skill_id: 9e74e147-b737-5e04-bb66-7f2f84d30e43
 - support_count: 1
 
 ## Evidence 1

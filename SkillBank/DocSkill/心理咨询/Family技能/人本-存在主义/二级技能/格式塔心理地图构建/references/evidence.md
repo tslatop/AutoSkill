@@ -1,7 +1,7 @@
 # 格式塔心理地图构建 Evidence
 
 - family: 人本-存在主义
-- skill_id: 08d7fce5-0631-5187-aa47-9520fb3599ef
+- skill_id: 9499689b-20ea-5a46-9659-d7f464f18f58
 - support_count: 1
 
 ## Evidence 1

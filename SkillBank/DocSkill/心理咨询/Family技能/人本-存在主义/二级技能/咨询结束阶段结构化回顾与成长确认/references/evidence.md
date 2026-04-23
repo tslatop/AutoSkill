@@ -1,7 +1,7 @@
 # 咨询结束阶段结构化回顾与成长确认 Evidence
 
 - family: 人本-存在主义
-- skill_id: dc44f371-45b5-5383-996d-a3a6a1c924ba
+- skill_id: db6cf381-27c1-51fa-beab-a18ef907b240
 - support_count: 1
 
 ## Evidence 1
