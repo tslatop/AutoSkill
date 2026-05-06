@@ -5,10 +5,13 @@ Shared LLM helpers for the offline document pipeline.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Optional
+import time
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from autoskill.llm.base import LLM
 from autoskill.utils.json import json_from_llm_text
+
+from .rate_limit import is_retryable_llm_error, retryable_llm_backoff_seconds
 
 
 def llm_complete_json(
@@ -35,6 +38,42 @@ def llm_complete_json(
             repair_user_s = json.dumps(repair_user, ensure_ascii=False)
         repaired = llm.complete(system=repair_system, user=repair_user_s, temperature=0.0)
         return json_from_llm_text(repaired)
+
+
+def llm_complete_json_with_retries(
+    *,
+    llm: LLM,
+    system: str,
+    payload: Any,
+    repair_system: str = "",
+    repair_payload: Any = None,
+    max_retries: int = 2,
+    on_retry: Optional[Callable[[int, Exception, float], None]] = None,
+) -> Any:
+    """Calls llm_complete_json() with bounded retries for transient provider failures."""
+
+    attempts = 0
+    while True:
+        try:
+            return llm_complete_json(
+                llm=llm,
+                system=system,
+                payload=payload,
+                repair_system=repair_system,
+                repair_payload=repair_payload,
+            )
+        except Exception as exc:
+            retryable = bool(is_retryable_llm_error(exc))
+            setattr(exc, "autoskill_retryable", retryable)
+            setattr(exc, "autoskill_retry_attempts", int(attempts or 0))
+            if not retryable or attempts >= max(0, int(max_retries or 0)):
+                raise
+            delay_s = min(8.0, retryable_llm_backoff_seconds(exc) * (2 ** attempts))
+            if on_retry is not None:
+                on_retry(attempts + 1, exc, delay_s)
+            if delay_s > 0.0:
+                time.sleep(delay_s)
+            attempts += 1
 
 
 def coerce_str_list(raw: Any) -> List[str]:

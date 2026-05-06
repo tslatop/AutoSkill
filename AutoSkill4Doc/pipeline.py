@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from autoskill import AutoSkill
 
-from .core.common import StageLogger, compact_metadata, emit_stage_progress
+from .core.common import StageLogger, compact_metadata, emit_stage_log, emit_stage_progress
 from .core.config import (
     DEFAULT_DOC_SKILL_USER_ID,
     DEFAULT_EXTRACT_STRATEGY,
@@ -31,6 +31,7 @@ from .core.config import (
     DEFAULT_SECTION_OUTLINE_MODE,
     default_store_path,
 )
+from .core.llm_utils import llm_complete_json, maybe_json_dict
 from .core.provider_config import allow_mock_provider, ensure_runtime_llm_provider
 from .stages.compiler import (
     SkillCompilationResult,
@@ -564,22 +565,19 @@ class DocumentBuildPipeline:
             progress_owner = getattr(progress_owner, "__self__", progress_owner)
         if progress_owner is not None and hasattr(progress_owner, "set_total_documents"):
             completed_docs = 0
+            completed_windows = 0
             if intermediate_writer is not None:
                 completed_docs = len(intermediate_writer.processed_extract_doc_ids())
+                completed_windows = sum(
+                    len(intermediate_writer.processed_extract_window_ids(str(doc.doc_id or "").strip()))
+                    for doc in list(ingest_result.documents or [])
+                )
             try:
                 progress_owner.set_total_documents(
                     len(list(ingest_result.documents or [])),
                     completed=completed_docs,
                     total_windows=len(list(ingest_result.windows or [])),
-                    completed_windows=len(
-                        [
-                            window
-                            for window in list(ingest_result.windows or [])
-                            if str(window.doc_id or "").strip() in set(intermediate_writer.processed_extract_doc_ids())
-                        ]
-                    )
-                    if intermediate_writer is not None
-                    else 0,
+                    completed_windows=(completed_windows if intermediate_writer is not None else 0),
                 )
             except Exception:
                 pass
@@ -671,9 +669,45 @@ class DocumentBuildPipeline:
                 intermediate=dict(intermediate_summary or {}),
             )
             if intermediate_writer is not None:
+                completed_doc_ids = [
+                    doc_id
+                    for doc_id in intermediate_writer.successful_register_doc_ids()
+                    if doc_id in {str(doc.doc_id or "").strip() for doc in list(ingest_result.documents or [])}
+                ]
+                unresolved_doc_ids = [
+                    str(doc.doc_id or "").strip()
+                    for doc in list(ingest_result.documents or [])
+                    if str(doc.doc_id or "").strip() and str(doc.doc_id or "").strip() not in set(completed_doc_ids)
+                ]
+                unresolved_nodes: List[str] = []
+                for payload in intermediate_writer.iter_extract_documents(
+                    ordered_doc_ids=[str(doc.doc_id or "").strip() for doc in list(ingest_result.documents or [])]
+                ):
+                    doc_id = str(payload.get("doc_id") or "").strip()
+                    if not doc_id or doc_id not in set(unresolved_doc_ids):
+                        continue
+                    for window_id in list(payload.get("unresolved_window_ids") or []):
+                        if str(window_id or "").strip():
+                            unresolved_nodes.append(self._extract_window_node_key(str(window_id or "").strip()))
+                final_status = "completed"
+                if unresolved_doc_ids:
+                    final_status = "partial" if completed_doc_ids else "failed"
+                intermediate_writer.record_run_outcome(
+                    status=final_status,
+                    completed_doc_ids=completed_doc_ids,
+                    unresolved_doc_ids=unresolved_doc_ids,
+                    unresolved_nodes=unresolved_nodes,
+                )
+                intermediate_summary = intermediate_writer.summary().to_dict()
+                build_result.intermediate = dict(intermediate_summary or {})
                 if resumed_run:
                     build_result.intermediate["resumed"] = True
-                intermediate_writer.complete(summary=build_result.to_dict())
+                if final_status == "completed":
+                    intermediate_writer.complete(summary=build_result.to_dict())
+                elif final_status == "partial":
+                    intermediate_writer.mark_partial(summary=build_result.to_dict())
+                else:
+                    intermediate_writer.fail(error="run finished with unresolved documents", summary=build_result.to_dict())
                 intermediate_summary = intermediate_writer.summary().to_dict()
                 build_result.intermediate = dict(intermediate_summary or {})
                 if resumed_run:
@@ -725,6 +759,208 @@ class DocumentBuildPipeline:
                 )
         return {"path": abs_path, "type": "directory", "files": items}
 
+    @staticmethod
+    def _extract_window_node_key(window_id: str) -> str:
+        return f"extract.window_plan({str(window_id or '').strip()})"
+
+    @staticmethod
+    def _extract_expand_node_key(window_id: str, slot: Any) -> str:
+        try:
+            slot_value = int(slot or 0)
+        except Exception:
+            slot_value = 0
+        return f"extract.window_expand({str(window_id or '').strip()}, {slot_value})"
+
+    @staticmethod
+    def _extract_aggregate_node_key(doc_id: str) -> str:
+        return f"extract.document_aggregate({str(doc_id or '').strip()})"
+
+    @staticmethod
+    def _extract_audit_node_key(doc_id: str) -> str:
+        return f"extract.document_audit({str(doc_id or '').strip()})"
+
+    @staticmethod
+    def _compile_group_node_key(group_key: str) -> str:
+        return f"compile.group({str(group_key or '').strip()})"
+
+    @staticmethod
+    def _register_skill_node_key(skill_id: str) -> str:
+        return f"register.skill({str(skill_id or '').strip()})"
+
+    @staticmethod
+    def _dedupe_supports(records: Sequence[SupportRecord]) -> List[SupportRecord]:
+        by_id: Dict[str, SupportRecord] = {}
+        for record in list(records or []):
+            by_id[str(record.support_id or "").strip()] = record
+        return list(by_id.values())
+
+    @staticmethod
+    def _dedupe_drafts(records: Sequence[SkillDraft]) -> List[SkillDraft]:
+        by_id: Dict[str, SkillDraft] = {}
+        for record in list(records or []):
+            by_id[str(record.draft_id or "").strip()] = record
+        return list(by_id.values())
+
+    @staticmethod
+    def _windows_by_doc(windows: Sequence[StrictWindow]) -> Dict[str, List[StrictWindow]]:
+        out: Dict[str, List[StrictWindow]] = {}
+        for window in list(windows or []):
+            doc_id = str(window.doc_id or "").strip()
+            if not doc_id:
+                continue
+            out.setdefault(doc_id, []).append(window)
+        return out
+
+    def _unwrap_llm_extractor(self, extractor: Any) -> Optional[LLMDocumentSkillExtractor]:
+        """Unwraps delegating test wrappers until the runtime LLM extractor is visible."""
+
+        current = extractor
+        seen = set()
+        while current is not None and id(current) not in seen:
+            if isinstance(current, LLMDocumentSkillExtractor):
+                return current
+            seen.add(id(current))
+            current = getattr(current, "delegate", None)
+        return None
+
+    def _doc_extract_from_window_payloads(
+        self,
+        *,
+        intermediate_writer: IntermediateRunWriter,
+        doc_id: str,
+        ordered_window_ids: Sequence[str],
+    ) -> Dict[str, Any]:
+        """Rebuilds one document's extract outputs from persisted window payloads."""
+
+        support_records: List[SupportRecord] = []
+        skill_drafts: List[SkillDraft] = []
+        errors: List[Dict[str, Any]] = []
+        payloads = intermediate_writer.iter_extract_windows(doc_id=doc_id, ordered_window_ids=ordered_window_ids)
+        for payload in payloads:
+            if isinstance(payload.get("error"), dict):
+                errors.append(dict(payload.get("error") or {}))
+            if bool(payload.get("failed")):
+                continue
+            for item in list(payload.get("supports") or []):
+                if isinstance(item, dict):
+                    support_records.append(SupportRecord.from_dict(item))
+            for item in list(payload.get("skill_drafts") or []):
+                if isinstance(item, dict):
+                    skill_drafts.append(SkillDraft.from_dict(item))
+        return {
+            "supports": self._dedupe_supports(support_records),
+            "drafts": self._dedupe_drafts(skill_drafts),
+            "errors": errors,
+            "window_payloads": payloads,
+        }
+
+    def _audit_document_extract(
+        self,
+        *,
+        record: DocumentRecord,
+        windows: Sequence[StrictWindow],
+        doc_supports: Sequence[SupportRecord],
+        doc_drafts: Sequence[SkillDraft],
+        taxonomy: SkillTaxonomy,
+        intermediate_writer: IntermediateRunWriter,
+    ) -> Dict[str, Any]:
+        """Runs one conservative document completeness audit on top of successful window extracts."""
+
+        runtime_extractor = self._unwrap_llm_extractor(self._extractor_for_taxonomy(taxonomy))
+        llm = getattr(runtime_extractor, "_llm", None)
+        if llm is None:
+            return {"status": "no_gap", "missing_window_ids": [], "reason": "audit llm unavailable"}
+        ordered_window_ids = [str(window.window_id or "").strip() for window in list(windows or []) if str(window.window_id or "").strip()]
+        doc_extract = self._doc_extract_from_window_payloads(
+            intermediate_writer=intermediate_writer,
+            doc_id=str(record.doc_id or "").strip(),
+            ordered_window_ids=ordered_window_ids,
+        )
+        payload = {
+            "audit_request": True,
+            "document": {
+                "doc_id": str(record.doc_id or "").strip(),
+                "title": str(record.title or "").strip(),
+                "domain": str(record.domain or "").strip(),
+                "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+            },
+            "window_summaries": [
+                {
+                    "window_id": str(window.window_id or "").strip(),
+                    "section_heading": str(window.section_heading or "").strip(),
+                    "strategy": str(window.strategy or "").strip(),
+                    "draft_names": [
+                        str(draft.name or "").strip()
+                        for draft in list(doc_extract.get("drafts") or [])
+                        if str((draft.metadata or {}).get("window_id") or "").strip() == str(window.window_id or "").strip()
+                    ],
+                    "support_count": len(
+                        [
+                            support
+                            for support in list(doc_extract.get("supports") or [])
+                            if str((support.metadata or {}).get("window_id") or "").strip() == str(window.window_id or "").strip()
+                        ]
+                    ),
+                    "draft_count": len(
+                        [
+                            draft
+                            for draft in list(doc_extract.get("drafts") or [])
+                            if str((draft.metadata or {}).get("window_id") or "").strip() == str(window.window_id or "").strip()
+                        ]
+                    ),
+                    "excerpt": str(window.text or "").strip()[:800],
+                }
+                for window in list(windows or [])
+            ],
+            "document_aggregate": {
+                "skill_count": len(list(doc_drafts or [])),
+                "skill_names": [str(draft.name or "").strip() for draft in list(doc_drafts or []) if str(draft.name or "").strip()],
+                "support_count": len(list(doc_supports or [])),
+            },
+        }
+        system = (
+            "You are AutoSkill4Doc's offline document skill extractor.\n"
+            "Task: audit whether a finished document extraction still missed reusable skills.\n"
+            "Output ONLY strict JSON parseable by json.loads.\n"
+            'Return {"status":"no_gap","missing_window_ids":[],"reason":"short reason"} when coverage is complete.\n'
+            'Return {"status":"missing_candidates","missing_window_ids":["window-id"],"reason":"short reason"} only when one more targeted re-extract is clearly justified.\n'
+            "Be conservative. Only point to windows explicitly present in window_summaries.\n"
+        )
+        repair_system = (
+            "You are a JSON output fixer for AutoSkill4Doc document extract audit.\n"
+            "Output ONLY strict JSON with status, missing_window_ids, and reason.\n"
+        )
+        try:
+            parsed = llm_complete_json(
+                llm=llm,
+                system=system,
+                payload=payload,
+                repair_system=repair_system,
+                repair_payload=f"DATA:\n{json.dumps(payload, ensure_ascii=False)}\n\nDRAFT:\n__DRAFT__",
+            )
+        except Exception as exc:
+            return {"status": "no_gap", "missing_window_ids": [], "reason": f"audit skipped: {exc}"}
+        obj = maybe_json_dict(parsed)
+        allowed_window_ids = set(ordered_window_ids)
+        missing_window_ids = [
+            str(item or "").strip()
+            for item in list(obj.get("missing_window_ids") or [])
+            if str(item or "").strip() in allowed_window_ids
+        ]
+        status = str(obj.get("status") or "").strip().lower()
+        if status not in {"no_gap", "missing_candidates"}:
+            status = "missing_candidates" if missing_window_ids else "no_gap"
+        if status == "no_gap":
+            missing_window_ids = []
+        if status == "missing_candidates" and not missing_window_ids:
+            status = "no_gap"
+        return {
+            "status": status,
+            "missing_window_ids": missing_window_ids,
+            "reason": str(obj.get("reason") or "").strip(),
+            "window_summaries": list(payload.get("window_summaries") or []),
+        }
+
     def _resume_or_extract(
         self,
         *,
@@ -734,89 +970,334 @@ class DocumentBuildPipeline:
         extract_progress_callback=None,
         stage_progress_callback=None,
     ) -> SkillExtractionResult:
-        """Loads persisted extract progress when possible and continues remaining docs only."""
+        """Resumes extract at document/window granularity and blocks incomplete docs from downstream."""
 
         if intermediate_writer.has_completed_stage("extract"):
             return intermediate_writer.load_extract()
+
         persisted = intermediate_writer.load_extract()
-        processed_doc_ids = set(intermediate_writer.processed_extract_doc_ids())
-        remaining_docs = [doc for doc in list(ingest_result.documents or []) if str(doc.doc_id or "").strip() not in processed_doc_ids]
-        if not remaining_docs:
-            intermediate_writer.write_extract(persisted)
-            return persisted
-        remaining_docs_by_id = {str(doc.doc_id or "").strip(): doc for doc in remaining_docs}
-        remaining_doc_ids = {str(doc.doc_id or "").strip() for doc in remaining_docs}
-        remaining_windows = [window for window in list(ingest_result.windows or []) if str(window.doc_id or "").strip() in remaining_doc_ids]
-        fresh = self.extract_skills(
-            documents=remaining_docs,
-            windows=remaining_windows,
-            taxonomy=taxonomy,
-            extract_workers=int(getattr(self.document_skill_extractor, "extract_workers", 1) or 1),
-            accumulate_result=True,
-            progress_callback=lambda record, supports, drafts, cumulative: self._on_resume_extract_progress(
-                intermediate_writer=intermediate_writer,
-                ingest_result=ingest_result,
-                extract_progress_callback=extract_progress_callback,
-                record=record,
-                supports=supports,
-                drafts=drafts,
-                cumulative=cumulative,
-            ),
-            stage_progress_callback=stage_progress_callback,
+        support_by_id = {support.support_id: support for support in list(persisted.support_records or [])}
+        draft_by_id = {draft.draft_id: draft for draft in list(persisted.skill_drafts or [])}
+        ordered_documents = list(ingest_result.documents or [])
+        windows_by_doc = self._windows_by_doc(list(ingest_result.windows or []))
+        visible_extractor = self._extractor_for_taxonomy(taxonomy)
+        runtime_extractor: DocumentSkillExtractor = self._unwrap_llm_extractor(visible_extractor) or visible_extractor
+        if runtime_extractor is not visible_extractor and callable(getattr(visible_extractor, "extract", None)):
+            try:
+                visible_extractor.extract(
+                    documents=[],
+                    windows=[],
+                    logger=self.logger,
+                    progress_callback=None,
+                    stage_progress_callback=None,
+                    accumulate_result=False,
+                )
+            except Exception:
+                pass
+        total_documents = len(ordered_documents)
+        total_windows = len(list(ingest_result.windows or []))
+        completed_window_count = sum(
+            len(intermediate_writer.processed_extract_window_ids(str(doc.doc_id or "").strip()))
+            for doc in ordered_documents
         )
-        written_error_doc_ids = set()
-        for error in list(fresh.errors or []):
-            if not isinstance(error, dict):
+
+        for index, record in enumerate(ordered_documents, start=1):
+            doc_id = str(record.doc_id or "").strip()
+            doc_payload = intermediate_writer.load_extract_document(doc_id)
+            doc_windows = list(windows_by_doc.get(doc_id, []))
+            expected_window_ids = [str(window.window_id or "").strip() for window in doc_windows if str(window.window_id or "").strip()]
+            processed_window_ids = set(intermediate_writer.processed_extract_window_ids(doc_id))
+            unresolved_window_ids = {
+                str(item or "").strip()
+                for item in list(doc_payload.get("unresolved_window_ids") or [])
+                if str(item or "").strip()
+            }
+            windows_to_run = [
+                window
+                for window in doc_windows
+                if str(window.window_id or "").strip() not in processed_window_ids
+                or str(window.window_id or "").strip() in unresolved_window_ids
+            ]
+            reused_window_ids = [
+                window_id
+                for window_id in expected_window_ids
+                if window_id in processed_window_ids and window_id not in {str(item.window_id or "").strip() for item in windows_to_run}
+            ]
+            if reused_window_ids:
+                reused_nodes: List[str] = []
+                for payload in intermediate_writer.iter_extract_windows(doc_id=doc_id, ordered_window_ids=reused_window_ids):
+                    window_id = str(payload.get("window_id") or "").strip()
+                    if not window_id or bool(payload.get("failed")):
+                        continue
+                    reused_nodes.append(self._extract_window_node_key(window_id))
+                    for item in list(payload.get("skill_drafts") or []):
+                        if not isinstance(item, dict):
+                            continue
+                        slot = int((item.get("metadata") or {}).get("candidate_slot") or 0)
+                        if slot > 0:
+                            reused_nodes.append(self._extract_expand_node_key(window_id, slot))
+                if bool(doc_payload.get("complete")):
+                    reused_nodes.append(self._extract_aggregate_node_key(doc_id))
+                intermediate_writer.add_reused_nodes(reused_nodes)
+            if not expected_window_ids:
+                if bool(doc_payload.get("complete")):
+                    continue
+                emit_stage_progress(
+                    stage_progress_callback,
+                    {
+                        "stage": "extract",
+                        "kind": "document_start",
+                        "document_index": index,
+                        "total_documents": total_documents,
+                        "doc_id": doc_id,
+                        "title": str(record.title or "").strip(),
+                        "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                        "total_windows": 0,
+                    },
+                )
+                direct = extract_skills(
+                    documents=[record],
+                    windows=[],
+                    extractor=runtime_extractor,
+                    logger=self.logger,
+                    accumulate_result=True,
+                )
+                if list(direct.errors or []):
+                    error_payload = dict(list(direct.errors or [])[0] or {})
+                    intermediate_writer.write_extract_error(
+                        record=record,
+                        error=error_payload,
+                        total_documents=total_documents,
+                        expected_window_ids=[],
+                        processed_window_ids=[],
+                        unresolved_window_ids=[],
+                    )
+                    emit_stage_progress(
+                        stage_progress_callback,
+                        {
+                            "stage": "extract",
+                            "kind": "document_failed",
+                            "doc_id": doc_id,
+                            "title": str(record.title or "").strip(),
+                            "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                            "total_windows": 0,
+                            "error": str(error_payload.get("error") or ""),
+                            "retryable": bool(error_payload.get("retryable")),
+                        },
+                    )
+                    continue
+                for support in list(direct.support_records or []):
+                    support_by_id[support.support_id] = support
+                for draft in list(direct.skill_drafts or []):
+                    draft_by_id[draft.draft_id] = draft
+                intermediate_writer.write_extract_progress(
+                    record=record,
+                    supports=list(direct.support_records or []),
+                    drafts=list(direct.skill_drafts or []),
+                    total_documents=total_documents,
+                    expected_window_ids=[],
+                    processed_window_ids=[],
+                    unresolved_window_ids=[],
+                    complete=True,
+                )
+                if extract_progress_callback is not None:
+                    extract_progress_callback(
+                        record,
+                        list(direct.support_records or []),
+                        list(direct.skill_drafts or []),
+                        SkillExtractionResult(
+                            documents=list(ingest_result.documents or []),
+                            windows=list(ingest_result.windows or []),
+                            support_records=list(support_by_id.values()),
+                            skill_drafts=list(draft_by_id.values()),
+                            extractor_name=str(direct.extractor_name or "llm"),
+                        ),
+                    )
+                emit_stage_progress(
+                    stage_progress_callback,
+                    {
+                        "stage": "extract",
+                        "kind": "document_done",
+                        "doc_id": doc_id,
+                        "title": str(record.title or "").strip(),
+                        "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                        "total_windows": 0,
+                        "supports": len(list(direct.support_records or [])),
+                        "drafts": len(list(direct.skill_drafts or [])),
+                        "total_support_records": len(support_by_id),
+                        "total_skill_drafts": len(draft_by_id),
+                        "errors": len(list(intermediate_writer.load_extract_summary().errors or [])),
+                    },
+                )
                 continue
-            doc_id = str(error.get("doc_id") or "").strip()
-            record = remaining_docs_by_id.get(doc_id)
-            if record is None or doc_id in written_error_doc_ids:
+            if not windows_to_run and bool(doc_payload.get("complete")):
                 continue
-            intermediate_writer.write_extract_error(
-                record=record,
-                error=dict(error or {}),
-                total_documents=len(ingest_result.documents),
+
+            emit_stage_progress(
+                stage_progress_callback,
+                {
+                    "stage": "extract",
+                    "kind": "document_start",
+                    "document_index": index,
+                    "total_documents": total_documents,
+                    "doc_id": doc_id,
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "total_windows": len(expected_window_ids),
+                },
             )
-            written_error_doc_ids.add(doc_id)
-        supports_by_id = {support.support_id: support for support in list(persisted.support_records or [])}
-        for support in list(fresh.support_records or []):
-            supports_by_id[support.support_id] = support
-        drafts_by_id = {draft.draft_id: draft for draft in list(persisted.skill_drafts or [])}
-        for draft in list(fresh.skill_drafts or []):
-            drafts_by_id[draft.draft_id] = draft
-        errors = list(persisted.errors or []) + list(fresh.errors or [])
-        merged = SkillExtractionResult(
-            documents=list(ingest_result.documents or []),
-            windows=list(ingest_result.windows or []),
-            support_records=list(supports_by_id.values()),
-            skill_drafts=list(drafts_by_id.values()),
-            errors=errors,
-            extractor_name=fresh.extractor_name or persisted.extractor_name,
-        )
-        intermediate_writer.write_extract(merged)
-        return merged
 
-    @staticmethod
-    def _on_resume_extract_progress(
-        *,
-        intermediate_writer: IntermediateRunWriter,
-        ingest_result: DocumentIngestResult,
-        extract_progress_callback,
-        record: DocumentRecord,
-        supports: List[SupportRecord],
-        drafts: List[SkillDraft],
-        cumulative: SkillExtractionResult,
-    ) -> None:
-        """Combines intermediate persistence with optional external progress reporting."""
+            failed_window_ids: List[str] = []
+            first_failed_error: Dict[str, Any] = {}
+            seen_processed_window_ids = set(processed_window_ids)
+            for window_index, window in enumerate(windows_to_run):
+                window_id = str(window.window_id or "").strip()
+                already_counted = window_id in processed_window_ids
+                result = extract_skills(
+                    documents=[record],
+                    windows=[window],
+                    extractor=runtime_extractor,
+                    logger=self.logger,
+                    accumulate_result=True,
+                )
+                if list(result.errors or []):
+                    error_payload = dict(list(result.errors or [])[0] or {})
+                    error_payload.setdefault("window_id", window_id)
+                    intermediate_writer.write_extract_window_error(
+                        record=record,
+                        window=window,
+                        error=error_payload,
+                    )
+                    if not first_failed_error:
+                        first_failed_error = dict(error_payload)
+                    failed_window_ids.append(window_id)
+                    failed_window_ids.extend(
+                        [
+                            str(item.window_id or "").strip()
+                            for item in list(windows_to_run[window_index + 1 :])
+                            if str(item.window_id or "").strip()
+                        ]
+                    )
+                    break
+                intermediate_writer.write_extract_window_progress(
+                    record=record,
+                    window=window,
+                    supports=list(result.support_records or []),
+                    drafts=list(result.skill_drafts or []),
+                )
+                for support in list(result.support_records or []):
+                    support_by_id[support.support_id] = support
+                for draft in list(result.skill_drafts or []):
+                    draft_by_id[draft.draft_id] = draft
+                seen_processed_window_ids.add(window_id)
+                if not already_counted:
+                    completed_window_count += 1
+                emit_stage_progress(
+                    stage_progress_callback,
+                    {
+                        "stage": "extract",
+                        "kind": "window_progress",
+                        "doc_id": doc_id,
+                        "title": str(record.title or "").strip(),
+                        "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                        "completed_windows": completed_window_count,
+                        "total_windows": total_windows,
+                        "total_support_records": len(support_by_id),
+                        "total_skill_drafts": len(draft_by_id),
+                        "window_id": window_id,
+                        "section_heading": str(window.section_heading or "").strip(),
+                    },
+                )
 
-        intermediate_writer.write_extract_progress(
-            record=record,
-            supports=supports,
-            drafts=drafts,
-            total_documents=len(ingest_result.documents),
-        )
-        if extract_progress_callback is not None:
-            extract_progress_callback(record, supports, drafts, cumulative)
+            doc_extract = self._doc_extract_from_window_payloads(
+                intermediate_writer=intermediate_writer,
+                doc_id=doc_id,
+                ordered_window_ids=expected_window_ids,
+            )
+            doc_supports = list(doc_extract.get("supports") or [])
+            doc_drafts = list(doc_extract.get("drafts") or [])
+            if failed_window_ids:
+                failure_payload = {
+                    "doc_id": doc_id,
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "error": str(first_failed_error.get("error") or "extract windows unresolved"),
+                    "retryable": bool(first_failed_error.get("retryable")),
+                    "window_id": str(first_failed_error.get("window_id") or "").strip(),
+                    "unresolved_window_ids": list(dict.fromkeys(failed_window_ids)),
+                    "stage": "extract",
+                }
+                intermediate_writer.write_extract_error(
+                    record=record,
+                    error=failure_payload,
+                    total_documents=total_documents,
+                    expected_window_ids=expected_window_ids,
+                    processed_window_ids=sorted(seen_processed_window_ids),
+                    unresolved_window_ids=list(dict.fromkeys(failed_window_ids)),
+                    reused_window_ids=reused_window_ids,
+                )
+                emit_stage_progress(
+                    stage_progress_callback,
+                    {
+                        "stage": "extract",
+                        "kind": "document_failed",
+                        "doc_id": doc_id,
+                        "title": str(record.title or "").strip(),
+                        "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                        "total_windows": len(expected_window_ids),
+                        "error": str(failure_payload.get("error") or ""),
+                        "retryable": bool(failure_payload.get("retryable")),
+                    },
+                )
+                continue
+
+            intermediate_writer.write_extract_progress(
+                record=record,
+                supports=doc_supports,
+                drafts=doc_drafts,
+                total_documents=total_documents,
+                expected_window_ids=expected_window_ids,
+                processed_window_ids=sorted(seen_processed_window_ids),
+                unresolved_window_ids=[],
+                reused_window_ids=reused_window_ids,
+                complete=True,
+                failed=False,
+            )
+            if extract_progress_callback is not None:
+                extract_progress_callback(
+                    record,
+                    doc_supports,
+                    doc_drafts,
+                    SkillExtractionResult(
+                        documents=list(ingest_result.documents or []),
+                        windows=list(ingest_result.windows or []),
+                        support_records=list(support_by_id.values()),
+                        skill_drafts=list(draft_by_id.values()),
+                        extractor_name=str(persisted.extractor_name or "llm"),
+                    ),
+                )
+            emit_stage_progress(
+                stage_progress_callback,
+                {
+                    "stage": "extract",
+                    "kind": "document_done",
+                    "doc_id": doc_id,
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "total_windows": len(expected_window_ids),
+                    "supports": len(doc_supports),
+                    "drafts": len(doc_drafts),
+                    "total_support_records": len(support_by_id),
+                    "total_skill_drafts": len(draft_by_id),
+                    "errors": len(list(intermediate_writer.load_extract_summary().errors or [])),
+                },
+            )
+
+        merged = intermediate_writer.load_extract()
+        all_doc_ids = [str(doc.doc_id or "").strip() for doc in ordered_documents]
+        extract_complete = len(intermediate_writer.processed_extract_doc_ids()) == len([doc_id for doc_id in all_doc_ids if doc_id])
+        intermediate_writer.write_extract(merged, complete_stage=extract_complete)
+        return intermediate_writer.load_extract_summary()
 
     def _resume_or_stream_compile(
         self,
@@ -835,13 +1316,29 @@ class DocumentBuildPipeline:
         documents_by_id = {str(doc.doc_id or "").strip(): doc for doc in list(ingest_result.documents or [])}
         extract_payloads = intermediate_writer.iter_extract_documents(ordered_doc_ids=ordered_doc_ids)
         existing_compile_payloads = intermediate_writer.iter_compile_documents(ordered_doc_ids=ordered_doc_ids)
-        processed_doc_ids = {str(item.get("doc_id") or "").strip() for item in existing_compile_payloads if str(item.get("doc_id") or "").strip()}
+        processed_doc_ids = {
+            str(item.get("doc_id") or "").strip()
+            for item in existing_compile_payloads
+            if str(item.get("doc_id") or "").strip() and not bool(item.get("skipped"))
+        }
+        reused_compile_nodes: List[str] = []
+        for payload in existing_compile_payloads:
+            if bool(payload.get("skipped")):
+                continue
+            for item in list(payload.get("skill_drafts") or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    reused_compile_nodes.append(self._compile_group_node_key(_group_key_for_draft(SkillDraft.from_dict(item))))
+                except Exception:
+                    continue
+        intermediate_writer.add_reused_nodes(reused_compile_nodes)
         completed_groups = sum(int(item.get("group_count") or 0) for item in existing_compile_payloads)
         completed_skills = sum(len(list(item.get("skill_specs") or [])) for item in existing_compile_payloads)
         completed_errors = sum(len(list(item.get("errors") or [])) for item in existing_compile_payloads)
         total_groups = 0
         for payload in extract_payloads:
-            if bool(payload.get("failed")):
+            if bool(payload.get("failed")) or not bool(payload.get("complete", True)):
                 continue
             drafts = [
                 SkillDraft.from_dict(item)
@@ -869,7 +1366,7 @@ class DocumentBuildPipeline:
             if record is None:
                 continue
             payload = next((item for item in extract_payloads if str(item.get("doc_id") or "").strip() == doc_id), {})
-            if bool(payload.get("failed")):
+            if bool(payload.get("failed")) or not bool(payload.get("complete", True)):
                 intermediate_writer.write_compile_progress(
                     record=record,
                     result=SkillCompilationResult(errors=[dict(payload.get("error") or {})]),
@@ -929,7 +1426,12 @@ class DocumentBuildPipeline:
             completed_errors += len(list(compiled.errors or []))
             processed_documents += 1
         aggregate = intermediate_writer.load_compile()
-        intermediate_writer.write_compile(aggregate)
+        compile_payloads = intermediate_writer.iter_compile_documents(ordered_doc_ids=ordered_doc_ids)
+        compile_complete = (
+            len(compile_payloads) >= len([doc_id for doc_id in ordered_doc_ids if doc_id])
+            and all(not bool(payload.get("skipped")) for payload in compile_payloads if str(payload.get("doc_id") or "").strip())
+        )
+        intermediate_writer.write_compile(aggregate, complete_stage=compile_complete)
         return SkillCompilationResult(errors=list(aggregate.errors or []), compiler_name=aggregate.compiler_name)
 
     def _resume_or_stream_register(
@@ -958,7 +1460,22 @@ class DocumentBuildPipeline:
         documents_by_id = {str(doc.doc_id or "").strip(): doc for doc in list(ingest_result.documents or [])}
         compile_payloads = intermediate_writer.iter_compile_documents(ordered_doc_ids=ordered_doc_ids)
         existing_register_payloads = intermediate_writer.iter_register_documents(ordered_doc_ids=ordered_doc_ids)
-        processed_doc_ids = {str(item.get("doc_id") or "").strip() for item in existing_register_payloads if str(item.get("doc_id") or "").strip()}
+        processed_doc_ids = {
+            str(item.get("doc_id") or "").strip()
+            for item in existing_register_payloads
+            if str(item.get("doc_id") or "").strip() and not bool(item.get("skipped"))
+        }
+        reused_register_nodes: List[str] = []
+        for payload in existing_register_payloads:
+            if bool(payload.get("skipped")):
+                continue
+            for item in list(payload.get("skill_specs") or []):
+                if not isinstance(item, dict):
+                    continue
+                skill_id = str(item.get("skill_id") or "").strip()
+                if skill_id:
+                    reused_register_nodes.append(self._register_skill_node_key(skill_id))
+        intermediate_writer.add_reused_nodes(reused_register_nodes)
         completed_skills = sum(len(list(item.get("skill_specs") or [])) for item in existing_register_payloads)
         total_skills = sum(len(list(item.get("skill_specs") or [])) for item in compile_payloads if not bool(item.get("skipped")))
         completed_errors = sum(len(list(item.get("errors") or [])) for item in existing_register_payloads)
@@ -1030,17 +1547,65 @@ class DocumentBuildPipeline:
                 if stage_progress_callback is not None:
                     stage_progress_callback(wrapped)
 
-            registered = self.register_versions(
-                documents=[record],
-                support_records=doc_supports,
-                skill_specs=doc_specs,
-                user_id=user_id,
-                metadata=metadata,
-                dry_run=dry_run,
-                target_state=target_state,
-                intermediate_writer=intermediate_writer,
-                progress_callback=_register_progress,
-            )
+            try:
+                registered = self.register_versions(
+                    documents=[record],
+                    support_records=doc_supports,
+                    skill_specs=doc_specs,
+                    user_id=user_id,
+                    metadata=metadata,
+                    dry_run=dry_run,
+                    target_state=target_state,
+                    intermediate_writer=intermediate_writer,
+                    progress_callback=_register_progress,
+                )
+            except Exception as exc:
+                error_payload = {
+                    "stage": "register_document",
+                    "doc_id": doc_id,
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "error": str(exc),
+                    "retryable": bool(getattr(exc, "autoskill_retryable", False)),
+                    "retry_attempts": int(getattr(exc, "autoskill_retry_attempts", 0) or 0),
+                }
+                emit_stage_progress(
+                    stage_progress_callback,
+                    {
+                        "stage": "register",
+                        "kind": "document_failed",
+                        "phase": "reconcile",
+                        "completed_skills": base_completed,
+                        "total_skills": total_skills,
+                        "current_skill_id": "",
+                        "current_name": "",
+                        "errors": base_errors + 1,
+                    },
+                )
+                emit_stage_log(
+                    self.logger,
+                    (
+                        f"[register_versions] document_error doc={doc_id} "
+                        f"retry_attempts={error_payload['retry_attempts']} "
+                        f"retryable={int(error_payload['retryable'])} "
+                        f"error={error_payload['error']}"
+                    ),
+                )
+                intermediate_writer.write_registration_progress(
+                    record=record,
+                    result=VersionRegistrationResult(
+                        documents=[record],
+                        errors=[error_payload],
+                        dry_run=bool(dry_run),
+                    ),
+                    total_documents=total_documents,
+                    processed_documents=processed_documents + 1,
+                    action_counts=action_counts,
+                    skipped=True,
+                )
+                completed_errors += 1
+                processed_documents += 1
+                continue
             intermediate_writer.write_registration_progress(
                 record=record,
                 result=registered,
@@ -1052,7 +1617,12 @@ class DocumentBuildPipeline:
             completed_errors += len(list(registered.errors or []))
             processed_documents += 1
         aggregate = intermediate_writer.load_registration()
-        intermediate_writer.write_registration(aggregate)
+        register_payloads = intermediate_writer.iter_register_documents(ordered_doc_ids=ordered_doc_ids)
+        register_complete = (
+            len(register_payloads) >= len([doc_id for doc_id in ordered_doc_ids if doc_id])
+            and all(not bool(payload.get("skipped")) for payload in register_payloads if str(payload.get("doc_id") or "").strip())
+        )
+        intermediate_writer.write_registration(aggregate, complete_stage=register_complete)
         return VersionRegistrationResult(
             visible_tree=dict(aggregate.visible_tree or {}),
             upserted_store_skills=list(aggregate.upserted_store_skills or []),

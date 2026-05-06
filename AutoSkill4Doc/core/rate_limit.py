@@ -232,3 +232,15 @@ def _adaptive_retry_delay_seconds(exc: Exception) -> float:
     if any(token in raw for token in ("timeout", "timed out", "ssl", "tls", "connection reset", "connection aborted", "connection refused", "remote disconnected", "connection closed", "eof")):
         return 0.5
     return 0.0
+
+
+def retryable_llm_backoff_seconds(exc: Exception) -> float:
+    """Returns the base retry backoff for transient LLM/provider failures."""
+
+    return _adaptive_retry_delay_seconds(exc)
+
+
+def is_retryable_llm_error(exc: Exception) -> bool:
+    """Returns whether the provider error looks transient and worth retrying."""
+
+    return retryable_llm_backoff_seconds(exc) > 0.0

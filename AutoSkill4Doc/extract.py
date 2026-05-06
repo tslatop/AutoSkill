@@ -132,10 +132,6 @@ class _CliExtractProgressReporter:
         _ = supports, drafts
         with self._lock:
             self.stage = "extract"
-            self.completed_documents = min(
-                self.total_documents or (self.completed_documents + 1),
-                self.completed_documents + 1,
-            )
             self.total_support_records = len(list(getattr(cumulative, "support_records", []) or []))
             self.total_skill_drafts = len(list(getattr(cumulative, "skill_drafts", []) or []))
             self.last_label = document_progress_label(
@@ -156,12 +152,25 @@ class _CliExtractProgressReporter:
             if stage == "extract":
                 self.stage = "extract"
                 kind = str(event.get("kind") or "").strip().lower()
-                if kind in {"document_start", "window_progress", "document_done"}:
+                if kind in {"document_start", "window_progress", "document_done", "document_failed"}:
                     self.last_label = document_progress_label(
                         doc_id=str(event.get("doc_id") or "").strip(),
                         title=str(event.get("title") or "").strip(),
                         source_file=str(event.get("source_file") or "").strip(),
                     )
+                if kind == "document_done":
+                    self.completed_documents = min(
+                        self.total_documents or (self.completed_documents + 1),
+                        self.completed_documents + 1,
+                    )
+                    self.total_support_records = max(self.total_support_records, int(event.get("total_support_records") or 0))
+                    self.total_skill_drafts = max(self.total_skill_drafts, int(event.get("total_skill_drafts") or 0))
+                elif kind == "document_failed":
+                    self.completed_documents = min(
+                        self.total_documents or (self.completed_documents + 1),
+                        self.completed_documents + 1,
+                    )
+                    self.failed_documents += 1
                 if kind == "window_progress":
                     self.completed_windows = max(self.completed_windows, int(event.get("completed_windows") or 0))
                     self.total_windows = max(self.total_windows, int(event.get("total_windows") or 0))
@@ -202,12 +211,6 @@ class _CliExtractProgressReporter:
         if not text:
             return
         with self._lock:
-            if text.startswith("[extract_skills] error "):
-                self.completed_documents = min(
-                    self.total_documents or (self.completed_documents + 1),
-                    self.completed_documents + 1,
-                )
-                self.failed_documents += 1
             self._clear_progress_line()
             print(text, file=self.stream, flush=True)
             self._render_progress()
@@ -546,6 +549,9 @@ def _build_summary(*, pipeline: DocumentBuildPipeline, result: DocumentBuildResu
         + list(result.registration.errors)
     )
     total_units = len(result.ingest.documents) + len(result.ingest.skipped_documents)
+    intermediate = dict(result.intermediate or {})
+    completed_doc_ids = [str(item or "").strip() for item in list(intermediate.get("completed_doc_ids") or []) if str(item or "").strip()]
+    unresolved_doc_ids = [str(item or "").strip() for item in list(intermediate.get("unresolved_doc_ids") or []) if str(item or "").strip()]
     return {
         "dry_run": bool(result.dry_run),
         "registry_root": pipeline.registry.root_dir,
@@ -564,7 +570,13 @@ def _build_summary(*, pipeline: DocumentBuildPipeline, result: DocumentBuildResu
         "upserted_count": len(result.registration.upserted_store_skills),
         "staging_runs": list(result.registration.staging_runs or []),
         "visible_tree": dict(result.registration.visible_tree or {}),
-        "intermediate": dict(result.intermediate or {}),
+        "intermediate": intermediate,
+        "status": str(intermediate.get("status") or "completed"),
+        "completed_documents": len(completed_doc_ids),
+        "incomplete_documents": len(unresolved_doc_ids),
+        "unresolved_documents": unresolved_doc_ids,
+        "unresolved_nodes": list(intermediate.get("unresolved_nodes") or []),
+        "reused_nodes": list(intermediate.get("reused_nodes") or []),
         "skills": skills_out,
         "errors": errors,
     }
@@ -1130,8 +1142,11 @@ def _run_build(args: argparse.Namespace) -> None:
     finally:
         reporter.finish()
     payload = _build_summary(pipeline=pipeline, result=result)
+    exit_code = 1 if str(payload.get("status") or "").strip().lower() in {"partial", "failed"} else 0
     if bool(args.json):
         _print_json(payload)
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     print("Offline document build completed.")
     print(
@@ -1146,11 +1161,21 @@ def _run_build(args: argparse.Namespace) -> None:
         f"families={len(list((payload.get('visible_tree') or {}).get('affected_families') or []))} "
         f"intermediate={'1' if (payload.get('intermediate') or {}).get('run_dir') else '0'}"
     )
+    print(
+        f"status={payload.get('status', 'completed')} "
+        f"completed_documents={payload.get('completed_documents', 0)} "
+        f"incomplete_documents={payload.get('incomplete_documents', 0)} "
+        f"reused_nodes={len(list(payload.get('reused_nodes') or []))}"
+    )
     if (payload.get("intermediate") or {}).get("run_dir"):
         print(f"intermediate_run={(payload.get('intermediate') or {}).get('run_dir')}")
+    if list(payload.get("unresolved_documents") or []):
+        print(f"unresolved_documents={json.dumps(list(payload.get('unresolved_documents') or []), ensure_ascii=False)}")
     for idx, skill in enumerate(list(payload.get("skills") or [])[:20], start=1):
         print(f"{idx}. {skill.get('name', '')} ({skill.get('version', '')}, {skill.get('status', '')})")
     _print_errors(list(payload.get("errors") or []))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def _run_ingest(args: argparse.Namespace) -> None:

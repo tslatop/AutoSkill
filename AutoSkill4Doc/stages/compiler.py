@@ -28,6 +28,7 @@ from ..core.llm_utils import (
     coerce_str_list,
     compact_text_list,
     llm_complete_json,
+    llm_complete_json_with_retries,
     maybe_json_dict,
     section_items_from_prompt,
 )
@@ -344,7 +345,7 @@ class LLMSkillCompiler:
             f"DATA:\n{json.dumps(payload, ensure_ascii=False)}\n\n"
             "DRAFT:\n__DRAFT__"
         )
-        parsed = llm_complete_json(
+        parsed = llm_complete_json_with_retries(
             llm=self._llm,
             system=system,
             payload=payload,
@@ -683,8 +684,22 @@ class LLMSkillCompiler:
                     },
                 )
             except Exception as e:
-                result.errors.append({"group": group_key, "error": str(e)})
-                emit_stage_log(logger, f"[compile_skills] error group={group_key}: {e}")
+                error_payload = {
+                    "stage": "compile_group",
+                    "group": group_key,
+                    "error": str(e),
+                    "retryable": bool(getattr(e, "autoskill_retryable", False)),
+                    "retry_attempts": int(getattr(e, "autoskill_retry_attempts", 0) or 0),
+                }
+                result.errors.append(error_payload)
+                emit_stage_log(
+                    logger,
+                    (
+                        f"[compile_skills] error group={group_key} "
+                        f"retry_attempts={error_payload['retry_attempts']} "
+                        f"retryable={int(error_payload['retryable'])}: {e}"
+                    ),
+                )
                 emit_stage_progress(
                     progress_callback,
                     {

@@ -1460,6 +1460,10 @@ def _scan_domain_entry(*, store_root: str, domain_root_name: str) -> Optional[Di
             continue
         family_bucket_label = name
         for family_name in sorted(os.listdir(family_bucket_dir)):
+            if not family_name or family_name.startswith("."):
+                continue
+            if not os.path.isdir(os.path.join(family_bucket_dir, family_name)):
+                continue
             family_entry = _scan_family_entry(
                 store_root=store_root,
                 domain_root_name=domain_root_name,
@@ -1488,6 +1492,8 @@ def _scan_family_entry(
     family_name: str,
 ) -> Optional[Dict[str, Any]]:
     family_dir = os.path.join(store_root, domain_root_name, family_bucket_label, family_name)
+    if not os.path.isdir(family_dir):
+        return None
     parent_relative_path = ""
     parent_skill_path = os.path.join(family_dir, "总技能", "SKILL.md")
     if os.path.isfile(parent_skill_path):
@@ -1516,6 +1522,8 @@ def _scan_family_entry(
             if not os.path.isdir(child_root):
                 continue
             for name in sorted(os.listdir(child_root)):
+                if not name or name.startswith("."):
+                    continue
                 md_path = os.path.join(child_root, name, "SKILL.md")
                 if os.path.isfile(md_path):
                     children.append(

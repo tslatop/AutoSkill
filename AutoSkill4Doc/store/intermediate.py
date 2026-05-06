@@ -35,8 +35,13 @@ class IntermediateRunSummary:
     run_dir: str
     status_path: str
     files: List[str] = field(default_factory=list)
+    status: str = "running"
     current_stage: str = "initialized"
     completed_stages: List[str] = field(default_factory=list)
+    completed_doc_ids: List[str] = field(default_factory=list)
+    unresolved_doc_ids: List[str] = field(default_factory=list)
+    unresolved_nodes: List[str] = field(default_factory=list)
+    reused_nodes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Returns a JSON-safe summary payload."""
@@ -46,8 +51,13 @@ class IntermediateRunSummary:
             "run_dir": self.run_dir,
             "status_path": self.status_path,
             "files": list(self.files or []),
+            "status": str(self.status or "running"),
             "current_stage": self.current_stage,
             "completed_stages": list(self.completed_stages or []),
+            "completed_doc_ids": list(self.completed_doc_ids or []),
+            "unresolved_doc_ids": list(self.unresolved_doc_ids or []),
+            "unresolved_nodes": list(self.unresolved_nodes or []),
+            "reused_nodes": list(self.reused_nodes or []),
         }
 
 
@@ -154,8 +164,13 @@ class IntermediateRunWriter:
                 "extract_skill_drafts": 0,
                 "processed_documents": 0,
                 "failed_documents": 0,
+                "reused_nodes": 0,
             },
             "source_file": "",
+            "completed_doc_ids": [],
+            "unresolved_doc_ids": [],
+            "unresolved_nodes": [],
+            "reused_nodes": [],
         }
         os.makedirs(self.run_dir, exist_ok=True)
         self._flush_state()
@@ -182,8 +197,13 @@ class IntermediateRunWriter:
             run_dir=self.run_dir,
             status_path=self.status_path,
             files=list(self._files or []),
+            status=str(self._state.get("status") or "running"),
             current_stage=str(self._state.get("current_stage") or "initialized"),
             completed_stages=list(self._state.get("completed_stages") or []),
+            completed_doc_ids=list(self._state.get("completed_doc_ids") or []),
+            unresolved_doc_ids=list(self._state.get("unresolved_doc_ids") or []),
+            unresolved_nodes=list(self._state.get("unresolved_nodes") or []),
+            reused_nodes=list(self._state.get("reused_nodes") or []),
         )
 
     def update_metadata(self, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -221,6 +241,119 @@ class IntermediateRunWriter:
             },
         )
 
+    def _extract_doc_name(self, doc_id: str) -> str:
+        return safe_dir_component(str(doc_id or "").strip() or "document")
+
+    def _window_node_key(self, window_id: str) -> str:
+        return f"extract.window_plan({str(window_id or '').strip()})"
+
+    def _window_expand_node_key(self, window_id: str, slot: Any) -> str:
+        return f"extract.window_expand({str(window_id or '').strip()}, {int(slot or 0)})"
+
+    def _normalize_node_list(self, values: Optional[Sequence[Any]] = None) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for item in list(values or []):
+            value = str(item or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            out.append(value)
+        return out
+
+    def _merge_reused_nodes(self, values: Optional[Sequence[Any]] = None) -> None:
+        merged = self._normalize_node_list(list(self._state.get("reused_nodes") or []) + list(values or []))
+        self._state["reused_nodes"] = merged
+        progress = dict(self._state.get("progress_counts") or {})
+        progress["reused_nodes"] = len(merged)
+        self._state["progress_counts"] = progress
+
+    def _write_extract_document_payload(self, record: DocumentRecord, payload: Dict[str, Any]) -> None:
+        doc_name = self._extract_doc_name(record.doc_id)
+        self._write_json(f"extract/documents/{doc_name}.json", payload)
+        self._write_json(f"extract/aggregate/{doc_name}.json", payload)
+
+    def write_extract_window_progress(
+        self,
+        *,
+        record: DocumentRecord,
+        window: StrictWindow,
+        supports: List[SupportRecord],
+        drafts: List[SkillDraft],
+    ) -> None:
+        """Writes one successful extract window payload."""
+
+        doc_name = self._extract_doc_name(record.doc_id)
+        window_name = safe_dir_component(str(window.window_id or "").strip() or "window")
+        payload = {
+            "doc_id": record.doc_id,
+            "title": record.title,
+            "source_file": str((record.metadata or {}).get("source_file") or ""),
+            "window_id": str(window.window_id or "").strip(),
+            "section_heading": str(window.section_heading or "").strip(),
+            "strategy": str(window.strategy or "").strip(),
+            "supports": [support.to_dict() for support in list(supports or [])],
+            "skill_drafts": [draft.to_dict() for draft in list(drafts or [])],
+            "failed": False,
+            "complete": True,
+            "error": {},
+        }
+        self._write_json(f"extract/windows/{doc_name}/{window_name}.json", payload)
+
+    def write_extract_window_error(
+        self,
+        *,
+        record: DocumentRecord,
+        window: StrictWindow,
+        error: Dict[str, Any],
+    ) -> None:
+        """Writes one failed extract window payload."""
+
+        doc_name = self._extract_doc_name(record.doc_id)
+        window_name = safe_dir_component(str(window.window_id or "").strip() or "window")
+        payload = {
+            "doc_id": record.doc_id,
+            "title": record.title,
+            "source_file": str((record.metadata or {}).get("source_file") or ""),
+            "window_id": str(window.window_id or "").strip(),
+            "section_heading": str(window.section_heading or "").strip(),
+            "strategy": str(window.strategy or "").strip(),
+            "supports": [],
+            "skill_drafts": [],
+            "failed": True,
+            "complete": False,
+            "error": dict(error or {}),
+        }
+        self._write_json(f"extract/windows/{doc_name}/{window_name}.json", payload)
+
+    def write_extract_audit(
+        self,
+        *,
+        record: DocumentRecord,
+        status: str,
+        missing_window_ids: Optional[Sequence[str]] = None,
+        reason: str = "",
+        window_summaries: Optional[List[Dict[str, Any]]] = None,
+        aggregate_skill_names: Optional[Sequence[str]] = None,
+        targeted_window_ids: Optional[Sequence[str]] = None,
+        resolved_window_ids: Optional[Sequence[str]] = None,
+    ) -> None:
+        """Writes one document-level extract audit artifact."""
+
+        doc_name = self._extract_doc_name(record.doc_id)
+        payload = {
+            "doc_id": record.doc_id,
+            "title": record.title,
+            "status": str(status or "").strip() or "no_gap",
+            "missing_window_ids": [str(item or "").strip() for item in list(missing_window_ids or []) if str(item or "").strip()],
+            "reason": str(reason or "").strip(),
+            "window_summaries": list(window_summaries or []),
+            "aggregate_skill_names": [str(item or "").strip() for item in list(aggregate_skill_names or []) if str(item or "").strip()],
+            "targeted_window_ids": [str(item or "").strip() for item in list(targeted_window_ids or []) if str(item or "").strip()],
+            "resolved_window_ids": [str(item or "").strip() for item in list(resolved_window_ids or []) if str(item or "").strip()],
+        }
+        self._write_json(f"extract/audit/{doc_name}.json", payload)
+
     def write_extract_progress(
         self,
         *,
@@ -228,6 +361,14 @@ class IntermediateRunWriter:
         supports: List[SupportRecord],
         drafts: List[SkillDraft],
         total_documents: int,
+        expected_window_ids: Optional[Sequence[str]] = None,
+        processed_window_ids: Optional[Sequence[str]] = None,
+        unresolved_window_ids: Optional[Sequence[str]] = None,
+        reused_window_ids: Optional[Sequence[str]] = None,
+        audit_status: str = "",
+        audit_missing_window_ids: Optional[Sequence[str]] = None,
+        complete: bool = True,
+        failed: bool = False,
     ) -> None:
         """Writes per-document extraction progress as soon as one doc finishes."""
 
@@ -236,6 +377,12 @@ class IntermediateRunWriter:
         progress["extract_skill_drafts"] = int(progress.get("extract_skill_drafts") or 0) + len(list(drafts or []))
         progress["processed_documents"] = int(progress.get("processed_documents") or 0) + 1
         self._state["progress_counts"] = progress
+        reused_nodes: List[str] = []
+        for window_id in list(reused_window_ids or []):
+            key = str(window_id or "").strip()
+            if key:
+                reused_nodes.append(self._window_node_key(key))
+        self._merge_reused_nodes(reused_nodes)
         payload = {
             "doc_id": record.doc_id,
             "title": record.title,
@@ -246,9 +393,18 @@ class IntermediateRunWriter:
             "cumulative_skill_drafts": int(progress.get("extract_skill_drafts") or 0),
             "processed_documents": int(progress.get("processed_documents") or 0),
             "total_documents": int(total_documents or 0),
+            "expected_window_ids": [str(item or "").strip() for item in list(expected_window_ids or []) if str(item or "").strip()],
+            "processed_window_ids": [str(item or "").strip() for item in list(processed_window_ids or []) if str(item or "").strip()],
+            "unresolved_window_ids": [str(item or "").strip() for item in list(unresolved_window_ids or []) if str(item or "").strip()],
+            "reused_window_ids": [str(item or "").strip() for item in list(reused_window_ids or []) if str(item or "").strip()],
+            "audit_status": str(audit_status or "").strip(),
+            "audit_missing_window_ids": [
+                str(item or "").strip() for item in list(audit_missing_window_ids or []) if str(item or "").strip()
+            ],
+            "complete": bool(complete),
+            "failed": bool(failed),
         }
-        doc_name = safe_dir_component(str(record.doc_id or "").strip() or "document")
-        self._write_json(f"extract/documents/{doc_name}.json", payload)
+        self._write_extract_document_payload(record, payload)
         self._set_stage(
             stage="extract_running",
             counts={
@@ -265,6 +421,12 @@ class IntermediateRunWriter:
         record: DocumentRecord,
         error: Dict[str, Any],
         total_documents: int,
+        expected_window_ids: Optional[Sequence[str]] = None,
+        processed_window_ids: Optional[Sequence[str]] = None,
+        unresolved_window_ids: Optional[Sequence[str]] = None,
+        reused_window_ids: Optional[Sequence[str]] = None,
+        audit_status: str = "",
+        audit_missing_window_ids: Optional[Sequence[str]] = None,
     ) -> None:
         """Writes one per-document extraction failure snapshot."""
 
@@ -272,6 +434,12 @@ class IntermediateRunWriter:
         progress["processed_documents"] = int(progress.get("processed_documents") or 0) + 1
         progress["failed_documents"] = int(progress.get("failed_documents") or 0) + 1
         self._state["progress_counts"] = progress
+        reused_nodes: List[str] = []
+        for window_id in list(reused_window_ids or []):
+            key = str(window_id or "").strip()
+            if key:
+                reused_nodes.append(self._window_node_key(key))
+        self._merge_reused_nodes(reused_nodes)
         payload = {
             "doc_id": record.doc_id,
             "title": record.title,
@@ -282,9 +450,17 @@ class IntermediateRunWriter:
             "error": dict(error or {}),
             "processed_documents": int(progress.get("processed_documents") or 0),
             "total_documents": int(total_documents or 0),
+            "expected_window_ids": [str(item or "").strip() for item in list(expected_window_ids or []) if str(item or "").strip()],
+            "processed_window_ids": [str(item or "").strip() for item in list(processed_window_ids or []) if str(item or "").strip()],
+            "unresolved_window_ids": [str(item or "").strip() for item in list(unresolved_window_ids or []) if str(item or "").strip()],
+            "reused_window_ids": [str(item or "").strip() for item in list(reused_window_ids or []) if str(item or "").strip()],
+            "audit_status": str(audit_status or "").strip(),
+            "audit_missing_window_ids": [
+                str(item or "").strip() for item in list(audit_missing_window_ids or []) if str(item or "").strip()
+            ],
+            "complete": False,
         }
-        doc_name = safe_dir_component(str(record.doc_id or "").strip() or "document")
-        self._write_json(f"extract/documents/{doc_name}.json", payload)
+        self._write_extract_document_payload(record, payload)
         self._set_stage(
             stage="extract_running",
             counts={
@@ -296,7 +472,7 @@ class IntermediateRunWriter:
             },
         )
 
-    def write_extract(self, result: "SkillExtractionResult") -> None:
+    def write_extract(self, result: "SkillExtractionResult", *, complete_stage: bool = True) -> None:
         """Writes the aggregate extraction snapshot."""
 
         payload = {
@@ -309,7 +485,7 @@ class IntermediateRunWriter:
         self._write_json("extract/result.json", payload)
         self._set_stage(
             stage="extract_completed",
-            completed_stage="extract",
+            completed_stage=("extract" if bool(complete_stage) else ""),
             counts={
                 "support_records": len(result.support_records),
                 "skill_drafts": len(result.skill_drafts),
@@ -366,6 +542,86 @@ class IntermediateRunWriter:
 
         return self._load_document_stage_payloads(stage="extract", ordered_doc_ids=ordered_doc_ids)
 
+    def load_extract_document(self, doc_id: str) -> Dict[str, Any]:
+        """Loads one persisted per-document extract payload."""
+
+        key = str(doc_id or "").strip()
+        if not key:
+            return {}
+        for payload in self.iter_extract_documents(ordered_doc_ids=[key]):
+            if str(payload.get("doc_id") or "").strip() == key:
+                return payload
+        return {}
+
+    def iter_extract_windows(
+        self,
+        *,
+        doc_id: str,
+        ordered_window_ids: Optional[Sequence[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Loads persisted per-window extract payloads for one document."""
+
+        doc_name = self._extract_doc_name(doc_id)
+        stage_dir = os.path.join(self.run_dir, "extract", "windows", doc_name)
+        if not os.path.isdir(stage_dir):
+            return []
+        by_window_id: Dict[str, Dict[str, Any]] = {}
+        extras: List[Dict[str, Any]] = []
+        for name in sorted(os.listdir(stage_dir)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(stage_dir, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            window_id = str(payload.get("window_id") or "").strip()
+            if window_id:
+                by_window_id[window_id] = payload
+            else:
+                extras.append(payload)
+        ordered: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for window_id in list(ordered_window_ids or []):
+            key = str(window_id or "").strip()
+            if key and key in by_window_id:
+                ordered.append(by_window_id[key])
+                seen.add(key)
+        for window_id in sorted(by_window_id):
+            if window_id in seen:
+                continue
+            ordered.append(by_window_id[window_id])
+        ordered.extend(extras)
+        return ordered
+
+    def load_extract_audit(self, doc_id: str) -> Dict[str, Any]:
+        """Loads one persisted document audit payload."""
+
+        path = os.path.join(self.run_dir, "extract", "audit", f"{self._extract_doc_name(doc_id)}.json")
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def processed_extract_window_ids(self, doc_id: str) -> List[str]:
+        """Returns successful extract window ids for one document."""
+
+        out: List[str] = []
+        for payload in self.iter_extract_windows(doc_id=doc_id):
+            if bool(payload.get("failed")) or not bool(payload.get("complete", True)):
+                continue
+            window_id = str(payload.get("window_id") or "").strip()
+            if window_id:
+                out.append(window_id)
+        return out
+
     def load_ingest(self) -> "DocumentIngestResult":
         """Loads the completed ingest snapshot."""
 
@@ -415,7 +671,7 @@ class IntermediateRunWriter:
         documents: List[DocumentRecord] = []
         windows: List[StrictWindow] = []
         aggregate_path = os.path.join(self.run_dir, "extract", "result.json")
-        if os.path.isfile(aggregate_path):
+        if self.has_completed_stage("extract") and os.path.isfile(aggregate_path):
             try:
                 with open(aggregate_path, "r", encoding="utf-8") as f:
                     aggregate = json.load(f)
@@ -456,7 +712,33 @@ class IntermediateRunWriter:
                             ]
                 except Exception as exc:
                     errors.append({"stage": "intermediate_ingest_result_load", "path": ingest_path, "error": str(exc)})
-        if os.path.isdir(extract_dir):
+        used_window_payloads = False
+        windows_root = os.path.join(self.run_dir, "extract", "windows")
+        if os.path.isdir(windows_root):
+            used_window_payloads = True
+            for doc_name in sorted(os.listdir(windows_root)):
+                doc_dir = os.path.join(windows_root, doc_name)
+                if not os.path.isdir(doc_dir):
+                    continue
+                for name in sorted(os.listdir(doc_dir)):
+                    if not name.endswith(".json"):
+                        continue
+                    path = os.path.join(doc_dir, name)
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                    except Exception as exc:
+                        errors.append({"path": path, "error": str(exc)})
+                        continue
+                    if bool(payload.get("failed")):
+                        continue
+                    for item in list(payload.get("supports") or []):
+                        if isinstance(item, dict):
+                            support_records.append(SupportRecord.from_dict(item))
+                    for item in list(payload.get("skill_drafts") or []):
+                        if isinstance(item, dict):
+                            skill_drafts.append(SkillDraft.from_dict(item))
+        if not used_window_payloads and os.path.isdir(extract_dir):
             for name in sorted(os.listdir(extract_dir)):
                 if not name.endswith(".json"):
                     continue
@@ -469,12 +751,17 @@ class IntermediateRunWriter:
                     continue
                 if isinstance(payload.get("error"), dict):
                     errors.append(dict(payload.get("error") or {}))
+                if bool(payload.get("failed")) or not bool(payload.get("complete", True)):
+                    continue
                 for item in list(payload.get("supports") or []):
                     if isinstance(item, dict):
                         support_records.append(SupportRecord.from_dict(item))
                 for item in list(payload.get("skill_drafts") or []):
                     if isinstance(item, dict):
                         skill_drafts.append(SkillDraft.from_dict(item))
+        for payload in self.iter_extract_documents():
+            if isinstance(payload.get("error"), dict):
+                errors.append(dict(payload.get("error") or {}))
         seen_supports = {}
         for support in support_records:
             seen_supports[support.support_id] = support
@@ -506,7 +793,7 @@ class IntermediateRunWriter:
         windows: List[StrictWindow] = []
         errors: List[Dict[str, Any]] = []
         aggregate_path = os.path.join(self.run_dir, "extract", "result.json")
-        if os.path.isfile(aggregate_path):
+        if self.has_completed_stage("extract") and os.path.isfile(aggregate_path):
             try:
                 with open(aggregate_path, "r", encoding="utf-8") as f:
                     aggregate = json.load(f)
@@ -549,25 +836,14 @@ class IntermediateRunWriter:
     def processed_extract_doc_ids(self) -> List[str]:
         """Returns document ids with successful per-document extract snapshots."""
 
-        extract_dir = os.path.join(self.run_dir, "extract", "documents")
-        out: List[str] = []
-        if not os.path.isdir(extract_dir):
-            return out
-        for name in sorted(os.listdir(extract_dir)):
-            if not name.endswith(".json"):
-                continue
-            path = os.path.join(extract_dir, name)
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-            except Exception:
-                continue
-            if bool((payload or {}).get("failed")):
-                continue
-            doc_id = str((payload or {}).get("doc_id") or "").strip()
-            if doc_id:
-                out.append(doc_id)
-        return out
+        return [
+            str(payload.get("doc_id") or "").strip()
+            for payload in self.iter_extract_documents()
+            if str(payload.get("doc_id") or "").strip()
+            and not bool(payload.get("failed"))
+            and bool(payload.get("complete", True))
+            and not list(payload.get("unresolved_window_ids") or [])
+        ]
 
     def write_compile_progress(
         self,
@@ -615,10 +891,10 @@ class IntermediateRunWriter:
         return [
             str(payload.get("doc_id") or "").strip()
             for payload in self.iter_compile_documents()
-            if str(payload.get("doc_id") or "").strip()
+            if str(payload.get("doc_id") or "").strip() and not bool(payload.get("skipped"))
         ]
 
-    def write_compile(self, result: "SkillCompilationResult") -> None:
+    def write_compile(self, result: "SkillCompilationResult", *, complete_stage: bool = True) -> None:
         """Writes the completed compile snapshot."""
 
         payload = {
@@ -630,7 +906,7 @@ class IntermediateRunWriter:
         self._write_json("compile/result.json", payload)
         self._set_stage(
             stage="compile_completed",
-            completed_stage="compile",
+            completed_stage=("compile" if bool(complete_stage) else ""),
             counts={
                 "compiled_support_records": len(result.support_records),
                 "compiled_skill_drafts": len(result.skill_drafts),
@@ -649,11 +925,13 @@ class IntermediateRunWriter:
         skill_drafts: List[SkillDraft] = []
         skill_specs: List[SkillSpec] = []
         errors: List[Dict[str, Any]] = []
-        if not os.path.isfile(path):
+        if not self.has_completed_stage("compile") or not os.path.isfile(path):
             payloads = self.iter_compile_documents()
             if not payloads:
                 return SkillCompilationResult(errors=[{"stage": "intermediate_compile_load", "error": "compile snapshot not found"}])
             for payload in payloads:
+                if bool(payload.get("skipped")):
+                    continue
                 support_records.extend(
                     [SupportRecord.from_dict(item) for item in list(payload.get("support_records") or []) if isinstance(item, dict)]
                 )
@@ -704,7 +982,7 @@ class IntermediateRunWriter:
 
         path = os.path.join(self.run_dir, "compile", "result.json")
         errors: List[Dict[str, Any]] = []
-        if os.path.isfile(path):
+        if self.has_completed_stage("compile") and os.path.isfile(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     payload = json.load(f)
@@ -780,8 +1058,13 @@ class IntermediateRunWriter:
         return [
             str(payload.get("doc_id") or "").strip()
             for payload in self.iter_register_documents()
-            if str(payload.get("doc_id") or "").strip()
+            if str(payload.get("doc_id") or "").strip() and not bool(payload.get("skipped"))
         ]
+
+    def successful_register_doc_ids(self) -> List[str]:
+        """Returns document ids that fully completed register."""
+
+        return self.processed_register_doc_ids()
 
     def write_register_decision(
         self,
@@ -859,7 +1142,7 @@ class IntermediateRunWriter:
 
         return list(self.load_register_decisions().keys())
 
-    def write_registration(self, result: "VersionRegistrationResult") -> None:
+    def write_registration(self, result: "VersionRegistrationResult", *, complete_stage: bool = True) -> None:
         """Writes the completed registration snapshot."""
 
         payload = {
@@ -880,7 +1163,7 @@ class IntermediateRunWriter:
         self._write_json("register/result.json", payload)
         self._set_stage(
             stage="register_completed",
-            completed_stage="register",
+            completed_stage=("register" if bool(complete_stage) else ""),
             counts={
                 "lifecycles": len(result.lifecycles),
                 "change_logs": len(result.change_logs),
@@ -911,7 +1194,7 @@ class IntermediateRunWriter:
         visible_tree: Dict[str, Any] = {}
         errors: List[Dict[str, Any]] = []
         dry_run = False
-        if not os.path.isfile(path):
+        if not self.has_completed_stage("register") or not os.path.isfile(path):
             payloads = self.iter_register_documents()
             if not payloads:
                 return VersionRegistrationResult(errors=[{"stage": "intermediate_register_load", "error": "register snapshot not found"}])
@@ -922,6 +1205,15 @@ class IntermediateRunWriter:
             upserted_by_id: Dict[str, Dict[str, Any]] = {}
             visible_lists = {"affected_families": set(), "parent_paths": set(), "child_paths": set()}
             for payload in payloads:
+                errors.extend(
+                    [
+                        {"stage": "intermediate_register_load", **item}
+                        for item in list(payload.get("errors") or [])
+                        if isinstance(item, dict)
+                    ]
+                )
+                if bool(payload.get("skipped")):
+                    continue
                 for item in list(payload.get("documents") or []):
                     if not isinstance(item, dict):
                         continue
@@ -966,13 +1258,6 @@ class IntermediateRunWriter:
                     visible_tree["readme_path"] = str(tree.get("readme_path") or "").strip()
                 for key in ("affected_families", "parent_paths", "child_paths"):
                     visible_lists[key].update(str(item or "").strip() for item in list(tree.get(key) or []) if str(item or "").strip())
-                errors.extend(
-                    [
-                        {"stage": "intermediate_register_load", **item}
-                        for item in list(payload.get("errors") or [])
-                        if isinstance(item, dict)
-                    ]
-                )
                 dry_run = dry_run or bool(payload.get("dry_run"))
             for key, values in visible_lists.items():
                 visible_tree[key] = sorted(values)
@@ -1027,6 +1312,33 @@ class IntermediateRunWriter:
             dry_run=dry_run,
         )
 
+    def record_run_outcome(
+        self,
+        *,
+        status: str,
+        completed_doc_ids: Optional[Sequence[str]] = None,
+        unresolved_doc_ids: Optional[Sequence[str]] = None,
+        unresolved_nodes: Optional[Sequence[str]] = None,
+        reused_nodes: Optional[Sequence[str]] = None,
+    ) -> None:
+        """Updates machine-readable run outcome fields without finalizing status."""
+
+        self._state["completed_doc_ids"] = self._normalize_node_list(completed_doc_ids)
+        self._state["unresolved_doc_ids"] = self._normalize_node_list(unresolved_doc_ids)
+        self._state["unresolved_nodes"] = self._normalize_node_list(unresolved_nodes)
+        if reused_nodes is not None:
+            self._merge_reused_nodes(reused_nodes)
+        self._state["status"] = str(status or "").strip() or str(self._state.get("status") or "running")
+        self._state["updated_at"] = now_iso()
+        self._flush_state()
+
+    def add_reused_nodes(self, nodes: Optional[Sequence[str]] = None) -> None:
+        """Appends reused node ids to the persisted run state."""
+
+        self._merge_reused_nodes(nodes)
+        self._state["updated_at"] = now_iso()
+        self._flush_state()
+
     def complete(self, *, summary: Optional[Dict[str, Any]] = None) -> None:
         """Marks the intermediate run as completed and optionally writes a summary."""
 
@@ -1036,9 +1348,20 @@ class IntermediateRunWriter:
         self._state["updated_at"] = now_iso()
         self._flush_state()
 
-    def fail(self, *, error: str) -> None:
+    def mark_partial(self, *, summary: Optional[Dict[str, Any]] = None) -> None:
+        """Marks the intermediate run as partial and optionally writes a summary."""
+
+        if summary:
+            self._write_json("final/summary.json", dict(summary or {}))
+        self._state["status"] = "partial"
+        self._state["updated_at"] = now_iso()
+        self._flush_state()
+
+    def fail(self, *, error: str, summary: Optional[Dict[str, Any]] = None) -> None:
         """Marks the intermediate run as failed."""
 
+        if summary:
+            self._write_json("final/summary.json", dict(summary or {}))
         self._state["status"] = "failed"
         self._state["updated_at"] = now_iso()
         self._state["last_error"] = str(error or "").strip()

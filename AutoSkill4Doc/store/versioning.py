@@ -35,6 +35,7 @@ from ..core.llm_utils import (
     coerce_str_list,
     compact_text_list,
     llm_complete_json,
+    llm_complete_json_with_retries,
     maybe_json_dict,
 )
 from ..core.rate_limit import AUTOSKILL4DOC_LLM_SCOPE, maybe_wrap_llm_with_rate_limit
@@ -1367,7 +1368,7 @@ class VersionManager:
                 f"max_tokens={getattr(change_llm, 'max_tokens', '')}"
             ),
         )
-        parsed = llm_complete_json(
+        parsed = llm_complete_json_with_retries(
             llm=change_llm,
             system=system,
             payload=payload,
@@ -1540,7 +1541,7 @@ class VersionManager:
         )
         repaired_payload = f"DATA:\n{json.dumps(payload, ensure_ascii=False)}\n\nDRAFT:\n__DRAFT__"
         try:
-            parsed = llm_complete_json(
+            parsed = llm_complete_json_with_retries(
                 llm=self.hierarchy_link_llm or self.llm,
                 system=system,
                 payload=payload,
@@ -1632,6 +1633,7 @@ class VersionManager:
 
         updated: Dict[str, SkillSpec] = {}
         touched_existing: Dict[str, SkillSpec] = {}
+        hierarchy_errors: List[Dict[str, Any]] = []
         for skill in current:
             if skill.status in {VersionState.DEPRECATED, VersionState.RETIRED}:
                 updated[skill.skill_id] = skill
@@ -1665,16 +1667,7 @@ class VersionManager:
             )
             hierarchy_error = linked.pop("hierarchy_error", None) if isinstance(linked, dict) else None
             if isinstance(hierarchy_error, dict):
-                emit_stage_log(
-                    self.logger,
-                    (
-                        f"[register_versions] hierarchy_error skill={hierarchy_error.get('skill_id') or skill.skill_id} "
-                        f"candidate_count={hierarchy_error.get('candidate_count', 0)} "
-                        f"fallback_decision={hierarchy_error.get('fallback_decision') or linked.get('decision') or 'defer'} "
-                        f"retry_attempts={hierarchy_error.get('retry_attempts', 0)} "
-                        f"error={hierarchy_error.get('error') or ''}"
-                    ),
-                )
+                hierarchy_errors.append(dict(hierarchy_error))
                 if error_sink is not None:
                     error_sink.append(hierarchy_error)
             parent_skill_id = str(linked.get("parent_skill_id") or "").strip()
@@ -1717,6 +1710,27 @@ class VersionManager:
                 updated[parent_skill_id] = linked_parent
             else:
                 touched_existing[parent_skill_id] = linked_parent
+
+        if hierarchy_errors:
+            fallback_counts: Dict[str, int] = {}
+            total_retry_attempts = 0
+            for item in hierarchy_errors:
+                decision = str(item.get("fallback_decision") or "defer").strip() or "defer"
+                fallback_counts[decision] = int(fallback_counts.get(decision) or 0) + 1
+                total_retry_attempts += int(item.get("retry_attempts", 0) or 0)
+            fallback_summary = " ".join(
+                f"{key}={value}"
+                for key, value in sorted(fallback_counts.items())
+                if int(value or 0) > 0
+            )
+            emit_stage_log(
+                self.logger,
+                (
+                    f"[register_versions] hierarchy_errors count={len(hierarchy_errors)} "
+                    f"retry_attempts={total_retry_attempts}"
+                    + (f" {fallback_summary}" if fallback_summary else "")
+                ),
+            )
 
         return [updated.get(skill.skill_id, skill) for skill in current], list(touched_existing.values())
 

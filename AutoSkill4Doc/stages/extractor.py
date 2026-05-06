@@ -1091,6 +1091,7 @@ class LLMDocumentSkillExtractor:
                 "asset_path": asset_path,
                 "asset_level": asset_level,
                 "visible_role": visible_role,
+                "candidate_slot": int(item.get("slot") or 0) if str(item.get("slot") or "").strip() else 0,
                 **dict(unit_metadata or {}),
             },
         )
@@ -1121,6 +1122,7 @@ class LLMDocumentSkillExtractor:
                 "stage": draft.stage,
                 "domain_type": self.taxonomy.domain_type,
                 "taxonomy_id": self.taxonomy.taxonomy_id,
+                "candidate_slot": int(item.get("slot") or 0) if str(item.get("slot") or "").strip() else 0,
                 **dict(unit_metadata or {}),
             },
         )
@@ -1398,6 +1400,19 @@ class LLMDocumentSkillExtractor:
                     "stage": "extract",
                 }
             )
+            emit_stage_progress(
+                stage_progress_callback,
+                {
+                    "stage": "extract",
+                    "kind": "document_failed",
+                    "doc_id": str(record.doc_id or "").strip(),
+                    "title": str(record.title or "").strip(),
+                    "source_file": str((record.metadata or {}).get("source_file") or "").strip(),
+                    "error": str(error),
+                    "retryable": bool(_is_retryable_extract_error(error)),
+                    "errors": len(list(result.errors or [])),
+                },
+            )
             emit_stage_log(logger, f"[extract_skills] error doc={record.doc_id}: {error}")
 
         doc_items = [
@@ -1460,8 +1475,6 @@ class LLMDocumentSkillExtractor:
             )
 
         max_workers = max(1, min(int(self.extract_workers or 1), len(doc_items)))
-        completed: Dict[int, Tuple[str, DocumentRecord, List[StrictWindow], object]] = {}
-        next_idx = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
@@ -1474,36 +1487,28 @@ class LLMDocumentSkillExtractor:
                 for idx, record, doc_windows in doc_items
             }
             for future in as_completed(future_map):
-                idx, record, doc_windows = future_map[future]
+                _, record, doc_windows = future_map[future]
                 try:
-                    completed[idx] = ("ok", record, doc_windows, future.result())
+                    supports_ready, drafts_ready = future.result()
+                    _commit_success(record, doc_windows, list(supports_ready or []), list(drafts_ready or []))
                 except Exception as exc:
-                    completed[idx] = ("error", record, doc_windows, exc)
-                while next_idx in completed:
-                    status, record_ready, doc_windows_ready, payload = completed.pop(next_idx)
-                    if status == "ok":
-                        supports_ready, drafts_ready = payload  # type: ignore[misc]
-                        _commit_success(record_ready, doc_windows_ready, list(supports_ready or []), list(drafts_ready or []))
+                    if _is_retryable_extract_error(exc):
+                        try:
+                            emit_stage_log(
+                                logger,
+                                f"[extract_skills] fallback sequential retry doc={record.doc_id} error={exc}",
+                            )
+                            supports_ready, drafts_ready = self._extract_document_with_retries(
+                                record=record,
+                                doc_windows=doc_windows,
+                                logger=logger,
+                                stage_progress_callback=stage_progress_callback,
+                            )
+                            _commit_success(record, doc_windows, list(supports_ready or []), list(drafts_ready or []))
+                        except Exception as fallback_exc:
+                            _commit_error(record, fallback_exc)
                     else:
-                        error_obj = payload  # type: ignore[assignment]
-                        if isinstance(error_obj, Exception) and _is_retryable_extract_error(error_obj):
-                            try:
-                                emit_stage_log(
-                                    logger,
-                                    f"[extract_skills] fallback sequential retry doc={record_ready.doc_id} error={error_obj}",
-                                )
-                                supports_ready, drafts_ready = self._extract_document_with_retries(
-                                    record=record_ready,
-                                    doc_windows=doc_windows_ready,
-                                    logger=logger,
-                                    stage_progress_callback=stage_progress_callback,
-                                )
-                                _commit_success(record_ready, doc_windows_ready, list(supports_ready or []), list(drafts_ready or []))
-                            except Exception as fallback_exc:
-                                _commit_error(record_ready, fallback_exc)
-                        else:
-                            _commit_error(record_ready, error_obj)  # type: ignore[arg-type]
-                    next_idx += 1
+                        _commit_error(record, exc)
         return result
 
 
