@@ -1,6 +1,6 @@
 ---
 name: autoskill
-description: Manage local Agent Skill files as an installable skill manager. Use after meaningful sessions or when the user asks to remember, extract, update, improve, merge, deduplicate, or create reusable skills from conversation experience; scan local skill folders for similar skills; decide discard vs improve vs merge vs create; optimize trigger descriptions; and maintain `SKILL.md` plus optional resources using skill-creator-style conventions.
+description: Manage local Agent Skill files as an installable skill manager. Proactively and periodically detect reusable skill material during or after meaningful sessions, including when the user asks to remember, extract, update, improve, merge, deduplicate, or create skills; scan local skill folders for similar skills; decide discard vs improve vs merge vs create; optimize trigger descriptions; and maintain `SKILL.md` plus optional resources using skill-creator-style conventions.
 ---
 
 # Local Skill File Manager
@@ -19,7 +19,7 @@ Maintain the user's local skill files as a lightweight self-improving memory sys
     assets/              (optional)
 ```
 
-Use this skill to decide when a session contains reusable skill material, find whether a similar skill already exists, then discard, improve, merge, or create a local skill.
+Use this skill to decide when a session contains reusable skill material, find whether a similar skill already exists, then discard, improve, merge, or create a local skill. The model should initiate this check when signals appear; it should not wait for the user to ask.
 
 ## Related Skill Coordination
 
@@ -50,9 +50,63 @@ Before writing anything, identify where local skills live.
 - If multiple plausible roots exist and the target is ambiguous, ask the user which root to maintain.
 - Never reorganize unrelated skill roots or edit skills outside the chosen root.
 
-## When To Run Extraction
+## Trigger Policy
 
-Run an extraction check at the end of a meaningful session, after the user gives durable feedback, or when the user says things like:
+Use a three-layer trigger policy:
+
+1. Silent scan: after each substantive user turn, briefly ask whether the turn contains a reusable rule, correction, workflow, preference, failure, or skill-quality issue.
+2. Extraction check: when a trigger below fires, classify the experience and test it against the extraction boundary.
+3. Write/update: only edit local skill files when the candidate passes the boundary and the target skill root is clear.
+
+The model should proactively initiate scans and extraction checks. Do not ask the user "should I check for a skill?" Ask only when the target root is ambiguous, the edit would overwrite uncertain behavior, or the user must approve an external install or sensitive script.
+
+## Background Execution
+
+Skill extraction and maintenance must not block the user's main task.
+
+- Treat extraction checks, similar-skill search, candidate drafting, and trigger-eval preparation as background maintenance work whenever possible.
+- Background work may prepare candidates, find similar skills, and draft diffs, but it must not write, update, delete, install, or enable skills without user confirmation.
+- Continue the primary user request first; do not make the user wait for skill extraction unless the user explicitly asked to focus on skill maintenance.
+- If background work is still running when the main task is ready, finish the main response and mention that skill maintenance may continue or be reported later.
+- Surface background results only when there is an actionable candidate decision, proposed file diff, or clarification/consent question.
+- Run at most one background skill-maintenance job per active conversation unless the user asks for a batch; queue or coalesce extra signals.
+- Do not start expensive searches, broad evals, or large rewrites in the foreground. Use lightweight checks first, then defer deeper validation to a natural pause or explicit maintenance pass.
+- If the runtime cannot actually run background work, emulate it by deferring the maintenance check until after the current answer is complete.
+
+## Confirmation Gate
+
+User confirmation is required before any skill file is created, updated, deleted, imported, installed, enabled, or materially rewritten.
+
+For `create`, show before writing:
+
+- proposed skill name and target path
+- why the candidate passed the reusable-skill boundary
+- similar skills checked and why this is not a duplicate
+- complete proposed `SKILL.md` content or a concise preview plus offer to show the full content
+- any proposed `agents/openai.yaml`, scripts, references, or assets
+
+For `improve` or `merge`, show before writing:
+
+- exact target skill path
+- decision type: `improve` or `merge`
+- why the change belongs in that existing skill
+- a concise diff or before/after summary of every changed section, especially frontmatter `description`, workflow, constraints, triggers, and resource references
+- any files that would be added, modified, or left untouched
+- validation plan or command to run after approval
+
+Ask for a clear yes/no approval before applying the change. If the user does not approve, do not edit the skill; report the candidate as deferred or discarded.
+
+## Immediate Triggers
+
+Run an extraction check immediately, or at the next natural pause if the user is waiting for the main task, when any of these happen:
+
+- The user corrects, rejects, or refines the model's approach in a way that should affect future similar tasks.
+- The user gives a durable preference, output contract, workflow, naming rule, tool rule, or quality gate.
+- A command, script, integration, or workflow fails and the session discovers a reusable fix.
+- The agent repeats non-trivial setup, scripting, transformation, or validation work that should become a reusable resource.
+- A similar local skill under-triggered, over-triggered, or produced incomplete guidance.
+- The session reveals a missing reference, template, script, or checklist that would prevent future repeated effort.
+- The user uses future-oriented language such as:
 
 - "Remember this as a skill."
 - "Save this workflow."
@@ -61,9 +115,31 @@ Run an extraction check at the end of a meaningful session, after the user gives
 - "This is my standard process."
 - "Create a skill from this conversation."
 
-Do not wait for the user to explicitly ask if the session clearly produced reusable operating knowledge. Still treat extraction as a check, not a requirement: no skill change is often the correct outcome.
+Still treat extraction as a check, not a requirement: no skill change is often the correct outcome.
 
 Do not extract when the user says the rule is temporary, asks not to remember it, or only wants a one-time answer.
+
+## Scheduled Checks
+
+Use scheduled checks to catch gradual learning that no single turn makes obvious:
+
+- Conversation-length check: after roughly 6 substantive user messages, 12 total turns, or 2-3 distinct task attempts since the last check.
+- Token/volume check: after a long chunk of new context, especially when the conversation may soon be summarized or compacted.
+- Task-boundary check: when a deliverable is completed, a debugging loop ends, a plan is accepted, or the user switches to a new task.
+- Session-end check: before the final response of a substantial session, review whether anything should be discarded, improved, merged, created, or noted.
+
+Keep scheduled checks lightweight. They should usually happen silently and only surface to the user when there is an actionable decision or a needed clarification.
+
+## Debounce And Batching
+
+Prevent noisy repeated extraction:
+
+- Do not re-check the same signal repeatedly in one session.
+- Batch multiple weak signals until a task boundary or scheduled check.
+- Create or update at most one skill per check unless the user explicitly asks for a batch.
+- Prefer `keep_note` or `discard` for borderline signals until repetition strengthens the evidence.
+- If a candidate is close but not yet reusable enough, remember the rationale in the completion note instead of creating a skill.
+- Coalesce simultaneous triggers into one background maintenance pass.
 
 ## Experience Triage
 
@@ -254,6 +330,12 @@ Choose one outcome.
 
 Prefer `discard` over creating vague skills. Prefer `improve` for skill-quality failures. Prefer `merge` over creating duplicate skills. Prefer `create` only for a distinct reusable capability.
 
+Decision outcomes before confirmation:
+
+- `discard`: may be reported without confirmation because no file changes occur.
+- `keep_note`: requires confirmation if it writes to any memory file; otherwise may be included in the completion note.
+- `improve`, `merge`, `create`: always require confirmation before file changes.
+
 ## Improvement Loop
 
 Use this loop for non-trivial changes to an existing local skill.
@@ -322,6 +404,8 @@ After editing, validate if a validator is available. If `skill-creator` tooling 
 python3 <skill-creator>/scripts/quick_validate.py <path/to/skill-folder>
 ```
 
+Do not perform the edit until the user has approved the proposed target and diff.
+
 ## Trigger Description Optimization
 
 The frontmatter `description` is the most important trigger surface. After creating or materially improving a skill, review it separately.
@@ -368,6 +452,8 @@ python3 <skill-creator>/scripts/init_skill.py <skill-name> --path <skill-root>
 5. Do not create README files, changelogs, install guides, or extra process notes unless the skill itself needs them to function.
 6. Validate with available tooling or manually check YAML frontmatter, naming, and trigger clarity.
 
+Do not create the folder or write files until the user has approved the proposed skill.
+
 ## Skill Writing Standards
 
 Borrow these skill-creator principles:
@@ -386,6 +472,9 @@ After managing local skills, report:
 
 - Decision: `discard`, `improve`, `merge`, or `create`.
 - Target skill path, or "no file changed".
+- User approval status: approved, rejected, or not yet requested.
 - Reuse-boundary reason: why it is reusable, duplicate, or too one-off.
+- For updates, exactly which skill changed and what sections/files changed.
 - Similar skills checked.
 - Validation command run, or why validation was unavailable.
+- Whether the maintenance completed synchronously or was left as background/deferred work.
