@@ -1,6 +1,6 @@
 ---
 name: autoskill
-description: Manage local Agent Skill files as an installable skill manager. Proactively and periodically detect reusable skill material during or after meaningful sessions; run non-blocking extraction checks; score candidates by evidence, recurrence, and value; search similar local skills; fully draft proposed skills or diffs before asking for approval; then, after explicit user approval, discard, improve, merge, or create `SKILL.md` folders using skill-creator-style conventions. Use when maintaining, deduplicating, extracting, improving, merging, or creating local agent skills.
+description: Manage local Agent Skill files as an installable skill manager. Proactively and periodically detect reusable skill material during or after meaningful sessions; run non-blocking extraction checks; offer candidate skill titles or accept a user-supplied topic when extraction direction is ambiguous; score candidates by evidence, recurrence, and value; fully draft proposed skills or diffs before asking for approval; then, after explicit user approval, discard, improve, merge, or create `SKILL.md` folders using skill-creator-style conventions.
 ---
 
 # Local Skill File Manager
@@ -65,9 +65,13 @@ The model should proactively initiate scans and extraction checks. Do not ask th
 
 ## Candidate Lifecycle
 
-Keep the lifecycle separate from any particular storage system: observe a signal, draft a candidate, de-duplicate by pattern, decide `discard`/`keep_note`/`improve`/`merge`/`create`, show the complete proposed skill or diff, then apply the smallest approved change and validate.
+Keep the lifecycle separate from any particular storage system: observe a signal, optionally ask the user to choose a candidate title/topic, draft the candidate, de-duplicate by pattern, decide `discard`/`keep_note`/`improve`/`merge`/`create`, show the complete proposed skill or diff, then apply the smallest approved change and validate.
 
 De-duplicate by task family, trigger, tools, failure mode, output contract, and target skill rather than exact wording. Do not create a private database, daemon, scheduler, or hidden background store as part of this skill.
+
+## Title Selection Gate
+
+Before full extraction, when the reusable topic is ambiguous or there are several plausible skills, show 2-5 concise candidate titles with one-line reasons plus `none of these` and `custom topic`. If the user chooses a title or enters a topic, automatically extract for that chosen direction, then show the complete proposed `SKILL.md` or complete diff for final approval. If the user chooses `none of these`, discard or keep a non-persistent note; do not write files. Title selection is only direction-setting, not permission to create or update a skill.
 
 ## Background Execution
 
@@ -84,7 +88,7 @@ Skill extraction and maintenance must not block the user's main task.
 
 ## Confirmation Gate
 
-User confirmation is required before any skill file is created, updated, deleted, imported, installed, enabled, or materially rewritten. Draft first, ask second: never ask "should I add/update a skill?" until the proposed content or change is already written out for review.
+User confirmation is required before any skill file is created, updated, deleted, imported, installed, enabled, or materially rewritten. Draft first, ask second: after any title/topic selection, never ask "should I add/update a skill?" until the proposed content or change is already written out for review.
 
 For `create`, show before writing:
 
@@ -485,13 +489,4 @@ Borrow these skill-creator principles:
 
 ## Completion Note
 
-After managing local skills, report:
-
-- Decision: `discard`, `improve`, `merge`, or `create`.
-- Target skill path, or "no file changed".
-- User approval status: approved, rejected, or not yet requested.
-- Reuse-boundary reason: why it is reusable, duplicate, or too one-off.
-- For updates, exactly which skill changed and what sections/files changed.
-- Similar skills checked.
-- Validation command run, or why validation was unavailable.
-- Whether the maintenance completed synchronously or was left as background/deferred work.
+After managing local skills, report the decision, target path or "no file changed", title/topic selected if any, approval status, reuse-boundary reason, similar skills checked, validation run, changed sections/files for updates, and whether maintenance completed synchronously or was deferred.
