@@ -71,7 +71,7 @@ De-duplicate by task family, trigger, tools, failure mode, output contract, and 
 
 ## Title Selection Gate
 
-Before full extraction, when the reusable topic is ambiguous or there are several plausible skills, show 2-5 concise candidate titles with one-line reasons plus `none of these` and `custom topic`. If the user chooses a title or enters a topic, automatically extract for that chosen direction, then show the complete proposed `SKILL.md` or complete diff for final approval. If the user chooses `none of these`, discard or keep a non-persistent note; do not write files. Title selection is only direction-setting, not permission to create or update a skill.
+Before full extraction, when the reusable topic is ambiguous or there are several plausible skills, show 2-5 concise reusable-capability titles with one-line evidence reasons plus `none of these` and `custom topic`. If the user chooses a title or enters a topic, treat it as direction only: re-run the extraction boundary and similar-skill search for that direction, discard it if it fails, or show the complete proposed `SKILL.md`/diff for final approval if it passes. If the user chooses `none of these`, discard or keep a non-persistent note; do not write files.
 
 ## Background Execution
 
