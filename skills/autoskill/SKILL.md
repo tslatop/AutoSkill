@@ -1,6 +1,6 @@
 ---
 name: autoskill
-description: Manage local Agent Skill files as an installable skill manager. Proactively and periodically detect reusable skill material during or after meaningful sessions; run non-blocking extraction checks; offer candidate skill titles or accept a user-supplied topic when extraction direction is ambiguous; preserve the appropriate output language; score candidates by evidence, recurrence, and value; fully draft proposed skills or diffs before asking for approval; then, after explicit user approval, discard, improve, merge, or create `SKILL.md` folders using skill-creator-style conventions.
+description: Manage local Agent Skill files as an installable skill manager. Proactively and periodically detect reusable skill material during or after meaningful sessions; run non-blocking extraction checks; offer candidate skill titles or accept a user-supplied topic when extraction direction is ambiguous; preserve the appropriate output language; search local and external skill ecosystems for similar skills; score candidates by evidence, recurrence, and value; fully draft proposed skills or diffs before asking for approval; then, after explicit user approval, discard, improve, merge, or create `SKILL.md` folders.
 ---
 
 # Local Skill File Manager
@@ -287,29 +287,23 @@ Do not include domain context as payload unless it changes future behavior.
 
 Search before creating anything.
 
-1. List local skills:
+1. Identify the candidate's domain, task, output type, tools, and likely synonyms. Build 2-3 short queries such as `<domain> <task>`, `<tool> <output>`, and `<failure-mode> workflow`.
+2. Search local skills first:
 
 ```bash
 rg --files -g 'SKILL.md' <skill-root>
-```
-
-2. Search for likely overlaps using candidate keywords, task verbs, domain nouns, and output types:
-
-```bash
 rg -n "<keyword|task|output-type>" <skill-root>
 ```
 
-3. If a `skill-finder`, `find-skills`, or equivalent local discovery tool is available, use it to broaden the search. Treat its result as evidence for similarity, not as an automatic install or merge decision.
-
-4. Inspect the best matches manually:
-   - frontmatter `name` and `description`
-   - main goal and workflow sections
-   - triggers, examples, tags, or equivalent usage hints
-   - resource directories and paths
-
-5. Compare the candidate against matches using the same pattern key: task family, trigger, tools, failure mode, output contract, and success criteria.
-
-6. If external ecosystem search is requested, present candidates and install commands, but do not install or overwrite local skills without user consent.
+3. Inspect likely local matches: frontmatter `name`/`description`, workflow, triggers, resources, and success criteria. Compare by task family, trigger, tools, failure mode, output contract, and audience.
+4. If a local `skill-finder`, `find-skills`, or equivalent discovery tool is installed, use it to broaden the local/external search. Treat results as similarity evidence, not an automatic merge/install decision.
+5. When external ecosystem search is requested or duplication risk is high, check well-known sources before creating a new skill:
+   - browse `https://skills.sh/` or its leaderboard for popular/battle-tested options
+   - run `npx skills find <query>` with the best 1-2 queries
+   - try alternate terms when the first query misses, e.g. `deploy` vs `deployment` or `pr review` vs `code review`
+6. Verify external candidates before recommending them: prefer high install counts, reputable sources, and active source repositories; be cautious with low-install or unknown-author skills.
+7. Present external matches with name, purpose, source/quality signal, link, and install command. Do not install, import, overwrite, or merge external skills without explicit user consent.
+8. If no suitable skill exists, say so and continue with `create` only if the candidate passes the extraction boundary.
 
 ## Decision Rules
 
